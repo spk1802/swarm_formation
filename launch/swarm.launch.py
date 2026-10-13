@@ -10,6 +10,9 @@ def launch_setup(context, *args, **kwargs):
     n_drones = int(LaunchConfiguration('n_drones').perform(context))
     log_dir = LaunchConfiguration('log_dir').perform(context)
     enable_delta = LaunchConfiguration('enable_delta').perform(context) == 'true'
+    enable_delta_dot = LaunchConfiguration('enable_delta_dot').perform(context) == 'true'
+    path_offset = LaunchConfiguration('path_offset').perform(context)
+    path_offset_north = LaunchConfiguration('path_offset_north').perform(context)
     log_tag = LaunchConfiguration('log_tag').perform(context)
     leader_speed = LaunchConfiguration('leader_speed').perform(context)
     leader_amplitude = LaunchConfiguration('leader_amplitude').perform(context)
@@ -20,36 +23,34 @@ def launch_setup(context, *args, **kwargs):
         'log_dir': log_dir,
     }
 
-    # 'figure8' -> executable 'figure8_leader', etc.
+    # One leader executable; --leader picks its path.
     leader_params = dict(common_params)
+    leader_params['path'] = leader
     if leader_speed:
         leader_params['speed'] = float(leader_speed)
     if leader_amplitude:
         leader_params['amplitude'] = float(leader_amplitude)
     if leader_wavelength:
         leader_params['wavelength'] = float(leader_wavelength)
+    if path_offset:
+        leader_params['path_offset'] = float(path_offset)
+    if path_offset_north:
+        leader_params['path_offset_north'] = float(path_offset_north)
 
     follower_params = dict(common_params)
     follower_params['enable_delta'] = enable_delta
+    follower_params['enable_delta_dot'] = enable_delta_dot
 
-    # formation_logger / plotter use output_dir + num_followers, not
+    # formation_logger uses output_dir + num_followers, not
     # log_dir/n_drones -- match the parameter names they actually declare.
     logger_params = {
         'output_dir': log_dir,
         'num_followers': n_drones,
         'tag': log_tag,
     }
-    plotter_params = {
-        'output_dir': log_dir,
-        'num_followers': n_drones,
-    }
-
     actions = [
-        Node(package='swarm_formation', executable=f'{leader}_leader',
+        Node(package='swarm_formation', executable='path_leader',
              name='leader', output='screen', parameters=[leader_params]),
-
-        Node(package='swarm_formation', executable='formation_manager',
-             name='formation_manager', output='screen', parameters=[common_params]),
 
         Node(package='swarm_formation', executable='follower_controller',
              name='follower_controller', output='screen', parameters=[follower_params]),
@@ -59,9 +60,6 @@ def launch_setup(context, *args, **kwargs):
 
         Node(package='swarm_formation', executable='formation_logger',
              name='formation_logger', output='screen', parameters=[logger_params]),
-
-        Node(package='swarm_formation', executable='plotter',
-             name='plotter', output='screen', parameters=[plotter_params]),
     ]
 
     if rviz == 'true':
@@ -75,8 +73,8 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument(
-            'leader', default_value='figure8',
-            choices=['figure8', 'circle', 'straight_line', 'sinusoid'],
+            'leader', default_value='sinusoid',
+            choices=['sinusoid', 'figure8', 'circle', 'straight_line'],
             description='Virtual leader reference path generator.'),
 
         DeclareLaunchArgument(
@@ -97,6 +95,22 @@ def generate_launch_description():
             'enable_delta', default_value='true',
             choices=['true', 'false'],
             description="Follower's carousel heading correction (Delta)."),
+
+        DeclareLaunchArgument(
+            'enable_delta_dot', default_value='true',
+            choices=['true', 'false'],
+            description="Follower's dDelta/dt feedforward (false = pointwise)."),
+
+        DeclareLaunchArgument(
+            'path_offset', default_value='',
+            description='East shift of the path [m] = initial cross-track '
+                        'error; the leader flies onto the path (VF mode). '
+                        'Empty or 0 = exact mode. Any path.'),
+
+        DeclareLaunchArgument(
+            'path_offset_north', default_value='',
+            description='North shift of the path [m] (with path_offset = East). '
+                        'Empty or 0 = no North shift.'),
 
         DeclareLaunchArgument(
             'log_tag', default_value='',
