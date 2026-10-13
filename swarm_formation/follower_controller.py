@@ -5,10 +5,9 @@ follower_controller.py
 Virtual-leader formation path-following controller (Basak & Ghosh, ICC 2025)
 with two additions over the paper:
 
-  1. Eq. 21 speed law with epsilon-regularization of the denominator
-     (already present in the previous version -- UNCHANGED here).
+  1. Eq. 21 speed law with epsilon-regularization of the denominator.
 
-  2. NEW: carousel correction Delta on the heading channel.
+  2. Carousel correction Delta on the heading channel.
 
      The paper's Eq. 14 sets the follower's desired heading target to the
      leader's heading chi_l when e_yi = 0. Substituting chi_i = chi_l into the
@@ -39,6 +38,7 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped, TwistStamped, AccelStamped
+from std_msgs.msg import Bool
 from math import atan2, sin, cos, pi, sqrt, hypot, degrees
 
 from px4_msgs.msg import (
@@ -68,40 +68,52 @@ class FormationController(Node):
         self.declare_parameter('enable_delta_dot', True)
         self.declare_parameter('max_yaw_rate', 0.8)      # rad/s, slew on chi_c
         self.declare_parameter('fwd_min_frac', 0.25)     # guard on v_gl - omega*g_y
+        # Guidance loop rate; a slow loop adds delay that drives a yaw limit cycle.
+        self.declare_parameter('control_rate', 50.0)     # Hz
+        # True: send Eq. 15's heading RATE as TrajectorySetpoint.yawspeed
+        # (yaw = NaN, PX4 feeds it forward). False: yaw-ANGLE command
+        # chi_c = chi + rate/alpha, which relies on PX4's yaw loop matching
+        # the first-order alpha model.
+        self.declare_parameter('yaw_rate_cmd', True)
+        # Drones 1..n_drones must all be in OFFBOARD before the formation is
+        # declared engaged (and the leader is released, see path_leader).
+        self.declare_parameter('n_drones', 4)
 
         self.enable_delta = bool(self.get_parameter('enable_delta').value)
         self.enable_delta_dot = bool(self.get_parameter('enable_delta_dot').value)
         self.max_yaw_rate = float(self.get_parameter('max_yaw_rate').value)
         self.fwd_min_frac = float(self.get_parameter('fwd_min_frac').value)
+        self.yaw_rate_cmd = bool(self.get_parameter('yaw_rate_cmd').value)
+        self.n_drones = max(1, min(4, int(self.get_parameter('n_drones').value)))
 
         self.chi_inf = pi / 2
-        # Scaled ~25x over the paper's 0.02, which was tuned for tens-of-metres
-        # lateral errors; at this scale's ~1m errors it gave too little turn authority.
+        # Paper's 0.02 is tuned for tens-of-metres lateral errors; scaled up
+        # for the ~1 m errors at this scale.
         self.k_y = 1.2
         # Longitudinal convergence rate (Ddot = -k_D*D); raised from the paper's
         # 0.02 (50s time constant) for a ~2.5s constant at this scale.
         self.k_D = 0.4
         # Exact leader yaw rate from /virtual_leader_velocity, not finite-differenced.
         self.leader_yaw_rate = 0.0
-        # NEW: exact leader yaw ACCELERATION from /virtual_leader_accel.
-        # Never finite-difference this -- see the module docstring of
-        # sinusoid_leader.py for why the resulting kick is dt-invariant.
+        # Exact leader yaw ACCELERATION from /virtual_leader_accel.
+        # Never finite-difference this: a backward difference of chi_l_dot
+        # injects a first-sample heading kick chi_l_dot*v_gl*g_x/v_req^2 that
+        # is dt-invariant (see path_leader.py; exact mode is closed form).
         self.leader_yaw_accel = 0.0
+        self.leader_accel_xy = (0.0, 0.0)   # inertial linear accel, for v_dot
         self.got_leader_accel = False
-        # Real elapsed time between callbacks (leader pose @100Hz vs 10Hz timer).
-        self.last_ey_time = {1: None, 2: None, 3: None, 4: None}
 
         # Slew-rate limit (not from the paper): stops a momentary Eq.21
         # denominator singularity from snapping the command to saturation.
         self.max_accel = 1.5
         self.prev_speed = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
 
-        # NEW: previous commanded heading, for the chi_c slew limit. Magnitude
+        # Previous commanded heading, for the chi_c slew limit. Magnitude
         # clipping alone still passes a step discontinuity, and steps excite
         # the airframe's lightly-damped yaw mode.
         self.prev_chi_c = {1: None, 2: None, 3: None, 4: None}
 
-        # NEW: throttle for the carousel ill-conditioning warning.
+        # Throttle for the carousel ill-conditioning warning.
         self._delta_warn_counter = 0
 
         # ==================================================
@@ -113,6 +125,7 @@ class FormationController(Node):
         self.takeoff_tol = 0.3         # m, altitude band to call it "airborne"
         self.airborne = {1: False, 2: False, 3: False, 4: False}
         self.offboard_engaged = {1: False, 2: False, 3: False, 4: False}
+        self.formation_engaged = False
 
         # ==================================================
         # PAPER CONTROLLER PARAMETERS
@@ -123,8 +136,6 @@ class FormationController(Node):
 
         self.n = 3.0
         self.m = 5.0
-
-        self.prev_ey = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
 
         # ==================================================
         # LEADER STATE
@@ -157,16 +168,8 @@ class FormationController(Node):
             4: (-3.0, -3.0, 0.0),
         }
 
-        # ==================================================
-        # TARGET STORAGE
-        # ==================================================
-
-        self.drone_targets = {
-            1: [0.0, 0.0, -5.0],
-            2: [0.0, 0.0, -5.0],
-            3: [0.0, 0.0, -5.0],
-            4: [0.0, 0.0, -5.0]
-        }
+        # Formation targets are computed here from formation_offsets and the
+        # leader pose.
 
         self.drone_states = {
             i: {"x": 0.0, "y": 0.0, "z": 0.0,
@@ -185,7 +188,7 @@ class FormationController(Node):
             TwistStamped, "/virtual_leader_velocity",
             self.leader_velocity_callback, 10)
 
-        # NEW: analytic chi_l_ddot from the leader node.
+        # Analytic chi_l_ddot from the leader node.
         self.create_subscription(
             AccelStamped, "/virtual_leader_accel",
             self.leader_accel_callback, 10)
@@ -211,23 +214,9 @@ class FormationController(Node):
             self.drone4_odom_callback, qos)
 
         # ==================================================
-        # TARGET SUBSCRIBERS
-        # ==================================================
-
-        self.create_subscription(
-            PoseStamped, '/drone1_target', self.drone1_target_callback, qos)
-        self.create_subscription(
-            PoseStamped, '/drone2_target', self.drone2_target_callback, qos)
-        self.create_subscription(
-            PoseStamped, '/drone3_target', self.drone3_target_callback, qos)
-        self.create_subscription(
-            PoseStamped, '/drone4_target', self.drone4_target_callback, qos)
-
-        # ==================================================
         # PUBLISHERS
         # ==================================================
 
-        # PX4_1
         self.offboard_pub_1 = self.create_publisher(
             OffboardControlMode, '/px4_1/fmu/in/offboard_control_mode', qos)
         self.traj_pub_1 = self.create_publisher(
@@ -235,7 +224,6 @@ class FormationController(Node):
         self.cmd_pub_1 = self.create_publisher(
             VehicleCommand, '/px4_1/fmu/in/vehicle_command', qos)
 
-        # PX4_2
         self.offboard_pub_2 = self.create_publisher(
             OffboardControlMode, '/px4_2/fmu/in/offboard_control_mode', qos)
         self.traj_pub_2 = self.create_publisher(
@@ -243,7 +231,6 @@ class FormationController(Node):
         self.cmd_pub_2 = self.create_publisher(
             VehicleCommand, '/px4_2/fmu/in/vehicle_command', qos)
 
-        # PX4_3
         self.offboard_pub_3 = self.create_publisher(
             OffboardControlMode, '/px4_3/fmu/in/offboard_control_mode', qos)
         self.traj_pub_3 = self.create_publisher(
@@ -251,7 +238,6 @@ class FormationController(Node):
         self.cmd_pub_3 = self.create_publisher(
             VehicleCommand, '/px4_3/fmu/in/vehicle_command', qos)
 
-        # PX4_4
         self.offboard_pub_4 = self.create_publisher(
             OffboardControlMode, '/px4_4/fmu/in/offboard_control_mode', qos)
         self.traj_pub_4 = self.create_publisher(
@@ -259,15 +245,30 @@ class FormationController(Node):
         self.cmd_pub_4 = self.create_publisher(
             VehicleCommand, '/px4_4/fmu/in/vehicle_command', qos)
 
+        # Start gate: latched, so a leader that subscribes late still sees it.
+        # Keeps the leader from starting while a drone is still climbing at
+        # its spawn point, which lies in a neighbour's slot path.
+        latched = rclpy.qos.QoSProfile(
+            depth=1,
+            durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE)
+        self.engaged_pub = self.create_publisher(Bool, '/formation_engaged', latched)
+
         self.counter = 0
-        self.dt_ctrl = 0.1
+        self.dt_ctrl = 1.0 / float(self.get_parameter('control_rate').value)
         self.timer = self.create_timer(self.dt_ctrl, self.timer_callback)
 
         self.get_logger().info('Formation Controller Started')
         self.get_logger().info(
             f"[carousel] enable_delta={self.enable_delta} "
             f"enable_delta_dot={self.enable_delta_dot} "
-            f"max_yaw_rate={self.max_yaw_rate:.2f} rad/s")
+            f"max_yaw_rate={self.max_yaw_rate:.2f} rad/s "
+            f"control_rate={1.0 / self.dt_ctrl:.0f} Hz "
+            f"yaw_cmd={'rate' if self.yaw_rate_cmd else 'angle'}")
+
+    def _ticks(self, seconds):
+        """Timer ticks in `seconds` -- keeps arm/takeoff timing rate-independent."""
+        return max(1, int(round(seconds / self.dt_ctrl)))
 
     # ==================================================
     # LEADER CALLBACKS
@@ -299,33 +300,18 @@ class FormationController(Node):
         self.leader_yaw_rate = msg.twist.angular.z
 
     def leader_accel_callback(self, msg):
-        """NEW: exact chi_l_ddot, computed analytically by the leader node."""
+        """Exact chi_l_ddot, computed analytically by the leader node."""
         self.leader_yaw_accel = msg.accel.angular.z
+        self.leader_accel_xy = (msg.accel.linear.x, msg.accel.linear.y)
         self.got_leader_accel = True
 
-    # ==================================================
-    # TARGET CALLBACKS
-    # ==================================================
-
-    def drone1_target_callback(self, msg):
-        self.drone_targets[1] = [msg.pose.position.x,
-                                 msg.pose.position.y,
-                                 msg.pose.position.z]
-
-    def drone2_target_callback(self, msg):
-        self.drone_targets[2] = [msg.pose.position.x,
-                                 msg.pose.position.y,
-                                 msg.pose.position.z]
-
-    def drone3_target_callback(self, msg):
-        self.drone_targets[3] = [msg.pose.position.x,
-                                 msg.pose.position.y,
-                                 msg.pose.position.z]
-
-    def drone4_target_callback(self, msg):
-        self.drone_targets[4] = [msg.pose.position.x,
-                                 msg.pose.position.y,
-                                 msg.pose.position.z]
+    def leader_speed_rate(self):
+        """v_dot = (v . a)/|v|: tangential component of the leader accel."""
+        v = self.leader_speed()
+        if v < 1e-3:
+            return 0.0
+        ax, ay = self.leader_accel_xy
+        return (self.leader["vx"] * ax + self.leader["vy"] * ay) / v
 
     # ==================================================
     # ODOMETRY CALLBACKS
@@ -405,7 +391,7 @@ class FormationController(Node):
         return ex, ey
 
     # ==================================================
-    # NEW: CAROUSEL CORRECTION
+    # CAROUSEL CORRECTION
     # ==================================================
 
     def leader_speed(self):
@@ -450,7 +436,7 @@ class FormationController(Node):
         if not well_conditioned:
             v_fwd = floor if gy >= 0 else -floor
             self._delta_warn_counter += 1
-            if self._delta_warn_counter % 20 == 1:
+            if self._delta_warn_counter % (20 * self._ticks(0.1)) == 1:
                 self.get_logger().warn(
                     f"[carousel] d{drone_id}: v_gl - omega*g_y = "
                     f"{v_gl - omega * gy:+.3f} below floor {floor:.3f}; "
@@ -462,7 +448,7 @@ class FormationController(Node):
 
     def compute_delta_dot(self, drone_id, v_req):
         """
-        dDelta/dt = chi_l_ddot * v_gl * g_x / v_req^2
+        dDelta/dt = g_x * (chi_l_ddot * v_gl - chi_l_dot * v_gl_dot) / v_req^2
 
         Derived by the atan2 quotient rule; the omega*g_x*g_y cross terms
         cancel exactly. Nothing in the derivation assumes constant curvature.
@@ -482,7 +468,14 @@ class FormationController(Node):
         gx, _ = self.formation_offsets[drone_id]
         v_gl = self.leader_speed()
 
-        return self.leader_yaw_accel * v_gl * gx / (v_req * v_req)
+        # The -omega*v_dot term is zero for a leader that is on the path
+        # during its speed ramp (exact mode: omega = 0 there), but NOT for
+        # the VF-mode leader (path_offset != 0), which is already turning
+        # while it ramps up. Without it, chi_l_ddot's ramp component injects
+        # a spurious dDelta/dt even though Delta itself is ramp-invariant.
+        omega = self.leader_yaw_rate
+        v_dot = self.leader_speed_rate()
+        return gx * (self.leader_yaw_accel * v_gl - omega * v_dot) / (v_req * v_req)
 
     # ==================================================
     # HEADING GUIDANCE (Eq. 14 / Eq. 15, + Delta)
@@ -525,40 +518,36 @@ class FormationController(Node):
         return self.wrap_angle(current_heading - desired_heading)
 
     def compute_ey_dot(self, drone_id):
+        """
+        Exact kinematic derivative of e_y = -dx sin(chi_l) + dy cos(chi_l) - g_y:
 
-        _, ey = self.compute_formation_error(drone_id)
+            e_y_dot = -dvx sin(chi_l) + dvy cos(chi_l) - chi_l_dot * x_L
 
-        now = self.get_clock().now()
-        last_t = self.last_ey_time[drone_id]
-
-        if last_t is None:
-            ey_dot = 0.0
-        else:
-            dt = (now - last_t).nanoseconds * 1e-9
-            dt = max(dt, 1e-3)
-            ey_dot = (ey - self.prev_ey[drone_id]) / dt
-
-        self.prev_ey[drone_id] = ey
-        self.last_ey_time[drone_id] = now
-
-        return ey_dot
+        from PX4's velocity estimate and the leader's published velocity and
+        turn rate. Replaces a finite difference of e_y, whose noise gain
+        scales with the loop rate (5x worse at 50 Hz than at 10 Hz).
+        """
+        st, ld = self.drone_states[drone_id], self.leader
+        c, s = cos(ld["yaw"]), sin(ld["yaw"])
+        x_body = (st["x"] - ld["x"]) * c + (st["y"] - ld["y"]) * s
+        dvx = st["vx"] - ld["vx"]
+        dvy = st["vy"] - ld["vy"]
+        return -dvx * s + dvy * c - self.leader_yaw_rate * x_body
 
     def signed_power(self, x, p):
         return abs(x) ** p * (1 if x >= 0 else -1)
 
-    def compute_command_heading(self, drone_id):
+    def compute_heading_rate(self, drone_id):
         """
-        Eq. 15 plus the dDelta/dt feedforward term.
+        Eq. 15's heading-rate law, plus the dDelta/dt feedforward term:
 
-        chi_c = chi_i + (1/alpha)*chi_d_dot - (eta/alpha)*sgn(chi_t)|chi_t|^(n/m)
+        chi_dot_c = chi_d_dot - eta*sgn(chi_t)|chi_t|^(n/m)
 
         where chi_d_dot = chi_l_dot + Delta_dot - (vector-field drift term).
         Omitting Delta_dot while including Delta leaves a residual steady
         heading offset of size (|Delta_dot|/eta)^(m/n) -- the same mechanism as
         dropping any true feedforward from a reaching law.
         """
-        chi = self.drone_states[drone_id]["yaw"]
-
         chi_tilde = self.compute_heading_error(drone_id)
 
         _, ey = self.compute_formation_error(drone_id)
@@ -572,20 +561,26 @@ class FormationController(Node):
 
         sliding = self.signed_power(chi_tilde, self.n / self.m)
 
-        chi_c = (
-            chi
-            + chi_l_dot / self.alpha
-            + delta_dot / self.alpha
-            - (2.0 * self.chi_inf / (self.alpha * pi))
+        # Desired heading rate: chi_d_dot - eta*sig(chi_tilde)^(n/m).
+        # Eq. 15 is this divided by alpha and added to chi (the inversion of
+        # the first-order yaw model chi_dot = alpha*(chi_c - chi)).
+        return (
+            chi_l_dot
+            + delta_dot
+            - (2.0 * self.chi_inf / pi)
             * (self.k_y / (1 + (self.k_y * ey) ** 2))
             * ey_dot
-            - (self.eta / self.alpha) * sliding
+            - self.eta * sliding
         )
 
-        return self.wrap_angle(chi_c)
+    def compute_command_heading(self, drone_id):
+        """Eq. 15 (legacy yaw-angle command): chi_c = chi + rate / alpha."""
+        chi = self.drone_states[drone_id]["yaw"]
+        rate = self.compute_heading_rate(drone_id)
+        return self.wrap_angle(chi + rate / self.alpha)
 
     # ==================================================
-    # SPEED GUIDANCE (Eq. 21 + epsilon regularization) -- UNCHANGED
+    # SPEED GUIDANCE (Eq. 21 + epsilon regularization)
     # ==================================================
 
     def compute_command_speed(self, drone_id):
@@ -621,8 +616,19 @@ class FormationController(Node):
         # eps is an error floor (den <= D_i always) -- must sit below the
         # target formation accuracy. 0.05 -> ~sub-0.1m accuracy at this scale.
         EPS_DEN = 0.05
+        # Blend target = the slot's own ground speed v_req when the carousel
+        # correction is on. Blending to leader_speed instead commands v_gl as
+        # e -> 0 while the slot moves at v_req on a curve, so the follower
+        # drifts along-track until e_x ~ EPS_DEN, where Eq. 21 regains
+        # authority: a parked e_x ~ 0.05 m floor. With enable_delta:=false
+        # the target stays leader_speed, so the paper baseline is unchanged.
+        blend_speed = leader_speed
+        if self.enable_delta:
+            _, v_req, _ = self.compute_carousel(drone_id)
+            if v_req > 1e-3:
+                blend_speed = v_req
         reg = denominator ** 2 + EPS_DEN ** 2
-        speed = (numerator * denominator + leader_speed * EPS_DEN ** 2) / reg
+        speed = (numerator * denominator + blend_speed * EPS_DEN ** 2) / reg
 
         # Heading-alignment gate: Eq. 21 assumes the heading has already
         # converged (it's a cascade with the heading law). Before that, blend
@@ -632,7 +638,7 @@ class FormationController(Node):
         # or the gate closes spuriously whenever the carousel offset is large.
         chi_d = self.compute_desired_heading(drone_id)
         align = max(0.0, cos(self.wrap_angle(chi_i - chi_d)))
-        speed = leader_speed + (speed - leader_speed) * align
+        speed = blend_speed + (speed - blend_speed) * align
 
         speed = max(-0.3, min(speed, 1.2))     # sized to the 0.5 m/s regime
 
@@ -649,7 +655,7 @@ class FormationController(Node):
         return max(-vz_max, min(vz_max, vz))
 
     # ==================================================
-    # NEW: HEADING COMMAND SLEW LIMIT
+    # HEADING COMMAND SLEW LIMIT
     # ==================================================
 
     def slew_limit_heading(self, drone_id, chi_c):
@@ -690,15 +696,25 @@ class FormationController(Node):
             vy = 0.0
             vz = 0.0
             chi_c = self.drone_states[drone_id]["yaw"]  # hold current heading
+            yaw_rate = float("nan")
             # Keep the slew filter seeded so engagement doesn't see a step.
             self.prev_chi_c[drone_id] = chi_c
 
         else:
-            # chi_c (Eq.15) is the STEERING command, not the direction of
-            # travel: the follower moves along its current heading chi_i at
-            # speed vgi (Eq.21), while chi_c steers chi_i toward chi_d.
-            chi_c = self.compute_command_heading(drone_id)   # steering only
-            chi_c = self.slew_limit_heading(drone_id, chi_c)
+            # Eq. 15 is the STEERING command, not the direction of travel:
+            # the follower moves along its current heading chi_i at speed vgi
+            # (Eq. 21), while the heading law steers chi_i toward chi_d.
+            if self.yaw_rate_cmd:
+                # Rate form: PX4 holds yaw_sp = current heading when yaw is
+                # NaN and feeds yawspeed forward, so the airframe turns at
+                # exactly this rate. Bounded by max_yaw_rate.
+                yaw_rate = self.compute_heading_rate(drone_id)
+                yaw_rate = max(-self.max_yaw_rate, min(self.max_yaw_rate, yaw_rate))
+                chi_c = float("nan")
+            else:
+                chi_c = self.compute_command_heading(drone_id)
+                chi_c = self.slew_limit_heading(drone_id, chi_c)
+                yaw_rate = float("nan")
             chi_i = self.drone_states[drone_id]["yaw"]       # direction of travel
             speed = self.compute_command_speed(drone_id)
             vx = speed * cos(chi_i)
@@ -712,6 +728,7 @@ class FormationController(Node):
         msg.velocity = [float(vx), float(vy), float(vz)]
         msg.acceleration = [0.0, 0.0, 0.0]
         msg.yaw = float(chi_c)
+        msg.yawspeed = float(yaw_rate)
 
         publisher.publish(msg)
 
@@ -748,8 +765,11 @@ class FormationController(Node):
         switch THAT drone into OFFBOARD and let the paper's guidance law
         take over. Runs every timer tick; only fires once per drone.
 
-        NOTE on engagement transients: the leader node holds station for
-        start_delay seconds and then ramps its speed with a smoothstep, so
+        Once drones 1..n_drones are all engaged it publishes the latched
+        /formation_engaged flag; the leader holds at the origin until then.
+
+        NOTE on engagement transients: the leader node holds station until
+        that flag (+ engage_delay) and then ramps its speed with a smoothstep, so
         omega = 0 and therefore Delta = 0 at the moment guidance engages. The
         carousel offset grows continuously from zero. That is why no explicit
         'yaw to chi_l + Delta before engaging' phase is needed here -- the
@@ -783,6 +803,14 @@ class FormationController(Node):
 
             self.get_logger().info(
                 f"Drone {drone_id} reached takeoff altitude - OFFBOARD ENABLED")
+
+        if not self.formation_engaged and all(
+                self.offboard_engaged[i] for i in range(1, self.n_drones + 1)):
+            self.formation_engaged = True
+            self.engaged_pub.publish(Bool(data=True))
+            self.get_logger().info(
+                f"FORMATION ENGAGED ({self.n_drones}/{self.n_drones} in OFFBOARD) "
+                "- /formation_engaged released the leader")
 
     # ==================================================
     # DIAGNOSTICS
@@ -844,11 +872,11 @@ class FormationController(Node):
         # moment IT individually finishes its PX4-handled climb.
         self.check_takeoff_complete()
 
-        if self.counter % 10 == 0 and self.airborne[1]:
+        if self.counter % self._ticks(1.0) == 0 and self.airborne[1]:
             self.log_diagnostics(1)
 
         # Warn once if the leader never publishes acceleration.
-        if self.counter == 100 and self.enable_delta_dot and not self.got_leader_accel:
+        if self.counter == self._ticks(10.0) and self.enable_delta_dot and not self.got_leader_accel:
             self.get_logger().warn(
                 "[carousel] no /virtual_leader_accel received -- running in "
                 "'pointwise' mode (Delta without dDelta/dt). This is a valid "
@@ -857,7 +885,7 @@ class FormationController(Node):
 
         # ARM
 
-        if self.counter == 50:
+        if self.counter == self._ticks(5.0):
 
             self.publish_vehicle_command(
                 self.cmd_pub_1, 2,
@@ -879,7 +907,7 @@ class FormationController(Node):
         # (local/relative takeoff) instead of a global target.
         # param7 = target altitude.
 
-        if self.counter == 70:
+        if self.counter == self._ticks(7.0):
 
             for pub, tgt in ((self.cmd_pub_1, 2), (self.cmd_pub_2, 3),
                              (self.cmd_pub_3, 4), (self.cmd_pub_4, 5)):

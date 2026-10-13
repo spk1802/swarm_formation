@@ -38,16 +38,12 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # --- leaders ---
-            'straight_line_leader = swarm_formation.straight_line_leader:main',
-            'circle_leader        = swarm_formation.circle_leader:main',
-            'figure8_leader       = swarm_formation.figure8_leader:main',
-            # NEW: sinusoidal reference path (paper Sec. IV, y = r sin x).
-            # Also publishes /virtual_leader_accel with the analytic
-            # chi_l_ddot needed by the follower's dDelta/dt feedforward.
-            'sinusoid_leader      = swarm_formation.sinusoid_leader:main',
+            # --- leader ---
+            # One node for every path (sinusoid / figure8 / circle /
+            # straight_line), exact or vector-field mode (path_offset != 0).
+            # Publishes /virtual_leader_accel (chi_l_ddot) for dDelta/dt.
+            'path_leader          = swarm_formation.path_leader:main',
             # --- guidance ---
-            'formation_manager    = swarm_formation.formation_manager:main',
             'follower_controller  = swarm_formation.follower_controller:main',
             # --- tooling ---
             'swarm_visualizer     = swarm_formation.swarm_visualizer:main',
@@ -55,7 +51,6 @@ setup(
             # swarm_formation formation_logger` and any launch-file
             # Node(executable='formation_logger') both fail to resolve.
             'formation_logger     = swarm_formation.formation_logger:main',
-            'plotter              = swarm_formation.plotter:main',
         ],
     },
 )

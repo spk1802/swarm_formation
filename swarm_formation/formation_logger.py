@@ -7,7 +7,7 @@ stack. Logs leader + follower pose/speed/heading and derived formation errors
 (D_i, exi, eyi) to CSV, computed from raw states + the known offsets G_i so
 the logger stays independent of the controller internals.
 
-NEW COLUMNS for the carousel-correction study:
+Carousel-study columns:
     {n}_delta        Delta_i = atan2(omega*g_x, v_gl - omega*g_y), recomputed
                      here from leader state + G_i (NOT read from the
                      controller, so the log stays an independent check)
@@ -264,7 +264,7 @@ class FormationLogger(Node):
         chiddot = lead.chiddot if lead.got_acc else float('nan')
 
         row = [f"{t:.4f}",
-               f"{lead.x:.4f}", f"{lead.y:.4f}", f"{lead.chi:.6f}",
+               f"{lead.x:.6f}", f"{lead.y:.6f}", f"{lead.chi:.6f}",
                f"{lead.speed:.4f}", f"{lead.chidot:.6f}",
                f"{chiddot:.8f}"]
 
@@ -292,10 +292,10 @@ class FormationLogger(Node):
             den = exi * math.cos(dchi) + eyi * math.sin(dchi)
             den_norm = den / Di if Di > 1e-6 else float('nan')
 
-            row += [f"{st.x:.4f}", f"{st.y:.4f}", f"{st.chi:.6f}",
+            row += [f"{st.x:.6f}", f"{st.y:.6f}", f"{st.chi:.6f}",
                     f"{st.speed:.4f}", f"{st.chidot:.6f}",
-                    f"{xL:.4f}", f"{yL:.4f}",
-                    f"{exi:.4f}", f"{eyi:.4f}", f"{Di:.4f}",
+                    f"{xL:.6f}", f"{yL:.6f}",
+                    f"{exi:.6f}", f"{eyi:.6f}", f"{Di:.6f}",
                     f"{chi_err:.6f}",
                     f"{delta:.6f}", f"{chi_err_res:.6f}", f"{ey_pred:.4f}",
                     f"{den:.5f}", f"{den_norm:.5f}"]
