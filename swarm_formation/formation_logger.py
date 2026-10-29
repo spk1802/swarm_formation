@@ -45,6 +45,8 @@ from rclpy.qos import (
 from geometry_msgs.msg import PoseStamped, TwistStamped, AccelStamped
 from px4_msgs.msg import VehicleOdometry
 
+from swarm_formation import formation_config
+
 
 # mirrors follower_controller.py; keep in sync
 LEADER_POSE_TOPIC = "/virtual_leader_pose"        # PoseStamped
@@ -63,14 +65,12 @@ class FollowerCfg:
     goal_offset: Tuple[float, float]         # G_i = (g_xi, g_yi) in leader body frame
 
 
-# spawn_ned and goal_offset copied verbatim from follower_controller.py
-# (spawns are aligned to the formation offsets, so spawn_ned == goal_offset here).
-FOLLOWERS: List[FollowerCfg] = [
-    FollowerCfg("f1", "/px4_1/fmu/out/vehicle_odometry", (3.0, 3.0), (3.0, 3.0)),
-    FollowerCfg("f2", "/px4_2/fmu/out/vehicle_odometry", (-3.0, 3.0), (-3.0, 3.0)),
-    FollowerCfg("f3", "/px4_3/fmu/out/vehicle_odometry", (3.0, -3.0), (3.0, -3.0)),
-    FollowerCfg("f4", "/px4_4/fmu/out/vehicle_odometry", (-3.0, -3.0), (-3.0, -3.0)),
-]
+def followers_from_config(path: str) -> List[FollowerCfg]:
+    """spawn_ned and goal_offset from config/formation.yaml, the same file
+    follower_controller.py and start_swarm.sh read."""
+    cfg = formation_config.load(path)
+    return [FollowerCfg(f"f{i}", f"/px4_{i}/fmu/out/vehicle_odometry", f.spawn, f.slot)
+            for i, f in enumerate(cfg.followers, 1)]
 
 # Seconds between diagnostic heartbeat log lines (0 disables).
 DIAG_PERIOD_S = 2.0
@@ -122,19 +122,21 @@ class FormationLogger(Node):
     def __init__(self):
         super().__init__("formation_logger")
 
-        self.declare_parameter("output_dir", os.path.expanduser("~/formation_logs"))
+        self.declare_parameter("output_dir", os.path.expanduser("~/sim_logs/sitl/standalone"))
         self.declare_parameter("log_rate_hz", 50.0)
         self.declare_parameter("num_followers", 4)
         self.declare_parameter("tag", "")       # appended to the filename
+        self.declare_parameter("formation_config", "")  # '' = installed config/formation.yaml
 
         out_dir = self.get_parameter("output_dir").value
         rate = float(self.get_parameter("log_rate_hz").value)
         n_foll = int(self.get_parameter("num_followers").value)
         tag = str(self.get_parameter("tag").value)
-        if not 1 <= n_foll <= len(FOLLOWERS):
+        followers = followers_from_config(self.get_parameter("formation_config").value)
+        if not 1 <= n_foll <= len(followers):
             raise ValueError(
-                f"num_followers={n_foll} outside 1..{len(FOLLOWERS)}")
-        self.followers: List[FollowerCfg] = FOLLOWERS[:n_foll]
+                f"num_followers={n_foll} outside 1..{len(followers)}")
+        self.followers: List[FollowerCfg] = followers[:n_foll]
 
         os.makedirs(out_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -15,6 +15,8 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import DurabilityPolicy
 
+from swarm_formation import formation_config
+
 
 class SwarmVisualizer(Node):
 
@@ -41,13 +43,13 @@ class SwarmVisualizer(Node):
         self.drone4 = None
 
         # PX4 odometry is per-spawn-origin; add each drone's spawn offset
-        # (NED, from start_swarm.sh poses) to share one world frame.
-        self.spawn_ned = {
-            1: (3.0,  3.0, 0.0),
-            2: (-3.0, 3.0, 0.0),
-            3: (3.0, -3.0, 0.0),
-            4: (-3.0,-3.0, 0.0),
-        }
+        # (NED, from config/formation.yaml, like start_swarm.sh) to share one
+        # world frame. Ids missing from the file never publish odometry.
+        self.declare_parameter('formation_config', '')
+        cfg = formation_config.load(self.get_parameter('formation_config').value)
+        self.spawn_ned = {i: (0.0, 0.0, 0.0) for i in (1, 2, 3, 4)}
+        for i, f in enumerate(cfg.followers, 1):
+            self.spawn_ned[i] = (f.spawn[0], f.spawn[1], 0.0)
 
         self.leader_history = []
         self.d1_history = []

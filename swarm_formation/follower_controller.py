@@ -41,6 +41,8 @@ from geometry_msgs.msg import PoseStamped, TwistStamped, AccelStamped
 from std_msgs.msg import Bool
 from math import atan2, sin, cos, pi, sqrt, hypot, degrees
 
+from swarm_formation import formation_config
+
 from px4_msgs.msg import (
     VehicleCommand,
     TrajectorySetpoint,
@@ -78,6 +80,8 @@ class FormationController(Node):
         # Drones 1..n_drones must all be in OFFBOARD before the formation is
         # declared engaged (and the leader is released, see path_leader).
         self.declare_parameter('n_drones', 4)
+        # Slots + spawn poses; '' = the installed config/formation.yaml.
+        self.declare_parameter('formation_config', '')
 
         self.enable_delta = bool(self.get_parameter('enable_delta').value)
         self.enable_delta_dot = bool(self.get_parameter('enable_delta_dot').value)
@@ -146,27 +150,24 @@ class FormationController(Node):
             "vx": 0.0, "vy": 0.0, "vz": 0.0
         }
 
-        self.formation_offsets = {
-            1: (3.0, 3.0),
-            2: (-3.0, 3.0),
-            3: (3.0, -3.0),
-            4: (-3.0, -3.0)
-        }
-
         # ==================================================
-        # SPAWN OFFSETS (NED world frame)
+        # FORMATION SLOTS + SPAWN OFFSETS (config/formation.yaml)
         # --------------------------------------------------
-        # PX4 SITL reports odometry relative to each drone's own spawn point,
-        # not a shared world frame; this offset lifts it into the leader's NED
-        # frame. Must match PX4_GZ_MODEL_POSE in start_swarm.sh and
-        # formation_offsets g_i below (drones spawn already on-target).
+        # formation_offsets: G_i = (ahead, right) of the leader.
+        # spawn_ned: PX4 SITL reports odometry relative to each drone's own
+        # spawn point, not a shared world frame; this offset lifts it into
+        # the leader's NED frame. start_swarm.sh spawns Gazebo from the same
+        # file, so the two cannot disagree. Ids missing from the file get a
+        # placeholder; with no PX4 instance they never get airborne.
         # ==================================================
-        self.spawn_ned = {
-            1: (3.0, 3.0, 0.0),
-            2: (-3.0, 3.0, 0.0),
-            3: (3.0, -3.0, 0.0),
-            4: (-3.0, -3.0, 0.0),
-        }
+        cfg = formation_config.load(self.get_parameter('formation_config').value)
+        self.n_drones = min(self.n_drones, len(cfg.followers))
+        self.formation_offsets = {i: (0.0, 0.0) for i in (1, 2, 3, 4)}
+        self.spawn_ned = {i: (0.0, 0.0, 0.0) for i in (1, 2, 3, 4)}
+        for i, f in enumerate(cfg.followers, 1):
+            self.formation_offsets[i] = f.slot
+            self.spawn_ned[i] = (f.spawn[0], f.spawn[1], 0.0)
+        self.get_logger().info(f"[config] {cfg.path}: {formation_config.summary(cfg)}")
 
         # Formation targets are computed here from formation_offsets and the
         # leader pose.
@@ -766,7 +767,7 @@ class FormationController(Node):
         take over. Runs every timer tick; only fires once per drone.
 
         Once drones 1..n_drones are all engaged it publishes the latched
-        /formation_engaged flag; the leader holds at the origin until then.
+        /formation_engaged flag; the leader holds at its start pose until then.
 
         NOTE on engagement transients: the leader node holds station until
         that flag (+ engage_delay) and then ramps its speed with a smoothstep, so

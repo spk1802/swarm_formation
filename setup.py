@@ -27,6 +27,9 @@ setup(
         # `bash <path>` or chmod +x it after install.
         (os.path.join('share', package_name, 'scripts'),
          glob('scripts/*.sh')),
+        # Leader start pose, follower spawns + slots (launch default).
+        (os.path.join('share', package_name, 'config'),
+         glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
