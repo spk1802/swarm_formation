@@ -1,0 +1,27 @@
+# Initial poses and formation slots -- the ONE place to change them.
+# Read by start_swarm.sh (Gazebo spawn poses) and by every node
+# (path_leader, follower_controller, formation_logger, swarm_visualizer).
+#
+# Frame: NED world, x = North, y = East [m]. Headings in degrees,
+# 0 = North, 90 = East. The reference path always starts at the origin
+# heading North; if the leader starts anywhere else it flies onto the path
+# (VF mode) before following it.
+
+leader:
+  start: [0.0, 0.0]        # [north, east] where the virtual leader starts
+  heading_deg: 0.0         # initial leader heading
+
+followers:                 # drone 1, 2, 3, 4 in order (up to 4)
+
+  - slot: [3.0, 3.0]       # drone 1: front-right
+    spawn: [3.0, 3.0]
+    heading_deg: 0.0
+  - slot: [-3.0, 3.0]      # drone 2: rear-right
+    spawn: [-3.0, 3.0]
+    heading_deg: 0.0
+  - slot: [3.0, -3.0]      # drone 3: front-left
+    spawn: [3.0, -3.0]
+    heading_deg: 0.0
+  - slot: [-3.0, -3.0]     # drone 4: rear-left
+    spawn: [-3.0, -3.0]
+    heading_deg: 0.0

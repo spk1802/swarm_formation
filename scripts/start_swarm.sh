@@ -10,7 +10,11 @@
 #   ./start_swarm.sh --leader figure8 --path-offset 5 # VF mode on any path
 #   ./start_swarm.sh --path-offset 10,10               # shift North 10, East 10
 #   ./start_swarm.sh --n 1 --leader straight_line     # single-drone harness
-#   ./start_swarm.sh --log-dir ~/swarm_logs
+#   ./start_swarm.sh --log-dir ~/sim_logs/sitl/step8/mytag
+#   ./start_swarm.sh --config ~/my_start.yaml        # other leader start / spawns / slots
+#
+# Leader start pose, follower spawns and formation slots live in
+# config/formation.yaml (or --config FILE). The path always starts at the origin.
 #
 # Carousel A/B (two runs differing ONLY in the Delta correction):
 #   ./start_swarm.sh --leader sinusoid --wavelength 100 --delta off --tag nodelta
@@ -31,7 +35,7 @@ ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
 N_DRONES=4
 LEADER="sinusoid"
 USE_RVIZ="true"
-LOG_DIR="${HOME}/swarm_logs/$(date +%Y%m%d_%H%M%S)"
+LOG_DIR="${SIM_LOGS:-$HOME/sim_logs}/sitl/runs/$(date +%Y%m%d_%H%M%S)"
 GZ_MODEL="x500"
 PX4_AIRFRAME=4001
 
@@ -48,19 +52,16 @@ LEADER_SPEED=""         # blank -> use the node's own default
 LEADER_AMPLITUDE=""
 LEADER_WAVELENGTH=""
 
-declare -A SPAWN_NED=(
-  [1]="3.0 3.0"
-  [2]="-3.0 3.0"
-  [3]="3.0 -3.0"
-  [4]="-3.0 -3.0"
-)
-SPAWN_HEADING_NED=0.0   # all drones face North at spawn
+# Leader start pose, follower spawns + slots. Resolved through the symlinks
+# colcon --symlink-install puts in install/, so this is the source tree's file.
+PKG_DIR="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
+FORMATION_CONFIG="$PKG_DIR/config/formation.yaml"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \?//'
+  sed -n '2,/^set -euo/{/^set -euo/d;p}' "$0" | sed 's/^# \?//'
   echo
   echo "Leaders: ${VALID_LEADERS[*]}"
   echo "Carousel options:"
@@ -71,7 +72,7 @@ usage() {
   echo "  --wavelength M        sinusoid wavelength"
   echo "  --delta-dot on|off    dDelta/dt feedforward        (default: on)"
   echo "  --path-offset E|N,E   shift the path East (E) or North,East (N,E) [m]: leader flies onto it"
-  echo "                        (VF mode, any leader; 0 = exact). Leader always starts at the origin."
+  echo "                        (VF mode, any leader; 0 = exact). Prefer leader.start in --config."
 }
 
 while [[ $# -gt 0 ]]; do
@@ -79,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --n)          N_DRONES="$2"; shift 2 ;;
     --leader)     LEADER="$2";   shift 2 ;;
     --log-dir)    LOG_DIR="$2";  shift 2 ;;
+    --config)     FORMATION_CONFIG="$2"; shift 2 ;;
     --rviz)       USE_RVIZ="true";  shift ;;
     --no-rviz)    USE_RVIZ="false"; shift ;;
     --delta)
@@ -111,8 +113,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if (( N_DRONES < 1 || N_DRONES > 4 )); then
-  echo "ERROR: --n must be 1..4 (spawn table has 4 entries)" >&2
+# Spawn poses from the formation config: "i north east heading_rad" per drone.
+# Also validates the file (pairs, 1..4 followers, no overlapping spawns).
+if ! SPAWNS="$(python3 "$PKG_DIR/swarm_formation/formation_config.py" "$FORMATION_CONFIG" --spawns)"; then
+  echo "ERROR: bad formation config $FORMATION_CONFIG" >&2
+  exit 1
+fi
+declare -A SPAWN_NED=()
+while read -r i north east heading; do
+  SPAWN_NED[$i]="$north $east $heading"
+done <<< "$SPAWNS"
+
+if (( N_DRONES < 1 || N_DRONES > ${#SPAWN_NED[@]} )); then
+  echo "ERROR: --n must be 1..${#SPAWN_NED[@]} ($FORMATION_CONFIG lists ${#SPAWN_NED[@]} followers)" >&2
   exit 1
 fi
 
@@ -135,6 +148,10 @@ fi
 
 mkdir -p "$LOG_DIR"
 echo "Logs -> $LOG_DIR"
+# The nodes read this copy, so the log folder holds exactly what was flown.
+cp "$FORMATION_CONFIG" "$LOG_DIR/formation.yaml"
+FORMATION_SUMMARY="$(python3 "$PKG_DIR/swarm_formation/formation_config.py" "$LOG_DIR/formation.yaml" --summary)"
+echo "Formation: $FORMATION_SUMMARY"
 echo "Leader: $LEADER | Delta correction: $ENABLE_DELTA${LOG_TAG:+ | tag: $LOG_TAG}"
 
 # Record the run configuration alongside the logs. Without this, two CSVs from
@@ -151,6 +168,8 @@ echo "Leader: $LEADER | Delta correction: $ENABLE_DELTA${LOG_TAG:+ | tag: $LOG_T
   echo "speed=${LEADER_SPEED:-<node default>}"
   echo "amplitude=${LEADER_AMPLITUDE:-<node default>}"
   echo "wavelength=${LEADER_WAVELENGTH:-<node default>}"
+  echo "formation_config=$(readlink -f "$FORMATION_CONFIG")"
+  echo "formation=$FORMATION_SUMMARY"
   echo "git_rev=$(git -C "$ROS_WS/src/swarm_formation" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$LOG_DIR/run_config.txt"
 
@@ -175,6 +194,12 @@ cleanup() {
   pkill -KILL -f '^gz sim' 2>/dev/null || true
   wait 2>/dev/null || true
   echo "Logs remain in $LOG_DIR"
+  # Refresh ~/sim_logs/INDEX.md + MANIFEST.sha256. The trap fires on both INT
+  # and EXIT, so only do it once; never let indexing fail the shutdown.
+  if [[ -z "${INDEXED:-}" ]]; then
+    INDEXED=1
+    "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/index_sim_logs.sh" || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -182,10 +207,10 @@ trap cleanup EXIT INT TERM
 # Helpers
 # ---------------------------------------------------------------------------
 
-# ned_to_enu_pose <north> <east> -> "x,y,z,roll,pitch,yaw" ENU string
+# ned_to_enu_pose <north> <east> <heading_rad> -> "x,y,z,roll,pitch,yaw" ENU string
 ned_to_enu_pose() {
-  local north="$1" east="$2"
-  python3 - "$north" "$east" "$SPAWN_HEADING_NED" <<'PY'
+  local north="$1" east="$2" heading="$3"
+  python3 - "$north" "$east" "$heading" <<'PY'
 import math, sys
 north, east, chi = (float(a) for a in sys.argv[1:4])
 enu_x, enu_y, enu_z = east, north, 0.0
@@ -261,8 +286,8 @@ wait_for "agent on UDP 8888" 20 agent_is_up
 # ---------------------------------------------------------------------------
 echo "[2/3] Starting $N_DRONES PX4 SITL instance(s)..."
 for (( i = 1; i <= N_DRONES; i++ )); do
-  read -r north east <<< "${SPAWN_NED[$i]}"
-  pose="$(ned_to_enu_pose "$north" "$east")"
+  read -r north east heading <<< "${SPAWN_NED[$i]}"
+  pose="$(ned_to_enu_pose "$north" "$east" "$heading")"
 
   # PX4's rc.gzsim only checks `[ -z "$PX4_GZ_STANDALONE" ]` -- a string-
   # emptiness test, not a boolean one. "0" is non-empty, so it still reads
@@ -306,6 +331,7 @@ LAUNCH_ARGS=(
   log_dir:="$LOG_DIR"
   enable_delta:="$ENABLE_DELTA"
   enable_delta_dot:="$ENABLE_DELTA_DOT"
+  formation_config:="$LOG_DIR/formation.yaml"
 )
 # Empty values are optional args: `ros2 launch` rejects `name:=` outright
 # ("malformed launch argument"), killing the launch before any node starts.

@@ -1,3 +1,6 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -17,10 +20,14 @@ def launch_setup(context, *args, **kwargs):
     leader_speed = LaunchConfiguration('leader_speed').perform(context)
     leader_amplitude = LaunchConfiguration('leader_amplitude').perform(context)
     leader_wavelength = LaunchConfiguration('leader_wavelength').perform(context)
+    formation_config = os.path.expanduser(
+        LaunchConfiguration('formation_config').perform(context))
 
+    # Every node reads leader start pose, spawns and slots from the same file.
     common_params = {
         'n_drones': n_drones,
         'log_dir': log_dir,
+        'formation_config': formation_config,
     }
 
     # One leader executable; --leader picks its path.
@@ -44,10 +51,13 @@ def launch_setup(context, *args, **kwargs):
     # formation_logger uses output_dir + num_followers, not
     # log_dir/n_drones -- match the parameter names they actually declare.
     logger_params = {
-        'output_dir': log_dir,
         'num_followers': n_drones,
         'tag': log_tag,
+        'formation_config': formation_config,
     }
+    # Empty log_dir -> keep the logger's own default (~/sim_logs/sitl/standalone).
+    if log_dir:
+        logger_params['output_dir'] = log_dir
     actions = [
         Node(package='swarm_formation', executable='path_leader',
              name='leader', output='screen', parameters=[leader_params]),
@@ -127,6 +137,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'leader_wavelength', default_value='',
             description='Sinusoid wavelength. Empty = node default.'),
+
+        DeclareLaunchArgument(
+            'formation_config',
+            default_value=os.path.join(get_package_share_directory('swarm_formation'),
+                                       'config', 'formation.yaml'),
+            description='Leader start pose, follower spawns and formation slots. '
+                        'start_swarm.sh must spawn Gazebo from the same file.'),
 
         OpaqueFunction(function=launch_setup),
     ])

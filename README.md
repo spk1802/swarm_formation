@@ -32,7 +32,22 @@ start_swarm.sh --delta on --delta-dot off      # Δ without its feedforward
 start_swarm.sh --n 1 --leader straight_line    # one drone
 ```
 
-Logs go to `~/swarm_logs/<timestamp>/`: one CSV, a `run_config.txt` with the flags used, and the process logs. If Gazebo hangs with `Network is unreachable`, run with `GZ_IP=127.0.0.1`.
+Logs go to `~/sim_logs/sitl/runs/<timestamp>/`: one CSV, a `run_config.txt` with the flags used, and the process logs. After a run, `scripts/index_sim_logs.sh` refreshes `~/sim_logs/INDEX.md` (one row per run) and records checksums in `MANIFEST.sha256`; `scripts/index_sim_logs.sh --verify` checks nothing has been lost or changed.
+
+```
+~/sim_logs/
+  INDEX.md, MANIFEST.sha256
+  sitl/runs/<timestamp>/   start_swarm.sh runs
+  sitl/step8/<tag>/        Step 8 runs (--log-dir ~/sim_logs/sitl/step8/<tag>)
+  sitl/standalone/         formation_logger run on its own
+  numpy/                   older numpy plots (current ones live in study/figures, in git)
+```
+
+If Gazebo hangs with `Network is unreachable`, run with `GZ_IP=127.0.0.1`.
+
+## Start poses and formation
+
+Edit [config/formation.yaml](config/formation.yaml): the leader's start point and heading, and each drone's slot (metres ahead/right of the leader), spawn point and heading. Leave out `spawn` and the drone spawns already on its slot. The path always starts at the origin heading North; a leader that starts anywhere else flies onto it first. `start_swarm.sh` and all four nodes read this one file, and each run saves the copy it used as `formation.yaml` in its log folder. Use `--config FILE` to keep several setups side by side.
 
 ## How it works
 
@@ -103,6 +118,8 @@ Keep the path's tightest turn much wider than the formation, or Eq. 21 blows up.
 
 ```
 scripts/start_swarm.sh        starts everything
+scripts/index_sim_logs.sh     indexes and checksums ~/sim_logs
+config/formation.yaml         leader start pose, follower spawns and slots
 launch/swarm.launch.py        the ROS nodes
 swarm_formation/              path_leader, follower_controller, formation_logger, swarm_visualizer
 study/step1..7_*.py           offline numpy notebooks, building the controller up step by step

@@ -13,6 +13,10 @@ One node for every reference path (Basak & Ghosh, ICC 2025):
 
     ./start_swarm.sh --leader figure8 --path-offset 5 --delta on
 
+The leader's start pose comes from config/formation.yaml (leader.start,
+leader.heading_deg). Anywhere other than the origin heading North also
+selects VF mode: the path stays at the origin and the leader flies onto it.
+
 Publishes (NED; the follower's carousel Delta and dDelta/dt need all three)
   /virtual_leader_pose      PoseStamped   x, y, z, quaternion(yaw = chi_l)
   /virtual_leader_velocity  TwistStamped  linear xy, angular.z = chi_l_dot
@@ -61,6 +65,7 @@ try:
     from geometry_msgs.msg import PoseStamped, TwistStamped, AccelStamped, Point
     from visualization_msgs.msg import Marker
     from std_msgs.msg import Bool
+    from swarm_formation import formation_config
 except ImportError:
     # study/ scripts import the path math below without ROS sourced.
     rclpy = None
@@ -379,7 +384,7 @@ class PathLeaderNode(Node):
             'path_offset_north': 0.0,      # [m] North shift; != 0 -> VF mode
             'speed': 0.5,                  # v_gl [m/s]
             'altitude': -5.0,              # NED, negative = up
-            # Start gate: hold at the origin until the follower publishes the
+            # Start gate: hold at the start pose until the follower publishes the
             # latched /formation_engaged (all drones in OFFBOARD), then wait
             # engage_delay. wait_for_formation:=false -> fixed start_delay.
             # Fallback: no flag within engage_timeout of node start -> warn
@@ -397,12 +402,13 @@ class PathLeaderNode(Node):
             # VF-mode gains
             'vf_K': 0.3, 'vf_chi_inf': pi / 2, 'vf_beta': 0.08,
             'vf_eps': 0.3, 'vf_omega_max': 0.08,
-            # diagnostics only
-            'formation_radius': 4.2426, 'g_x_max': 3.0,
         }
         for k, v in defaults.items():
             self.declare_parameter(k, v)
         g = lambda k: float(self.get_parameter(k).value)  # noqa: E731
+        # Leader start pose + slots; '' = the installed config/formation.yaml.
+        self.declare_parameter('formation_config', '')
+        self.cfg = formation_config.load(self.get_parameter('formation_config').value)
 
         self.path_name = str(self.get_parameter('path').value)
         self.path_offset = g('path_offset')
@@ -423,11 +429,17 @@ class PathLeaderNode(Node):
                               g('amplitude'), g('wavelength'), g('radius'),
                               g('direction'), g('f8_length'), g('f8_width'),
                               x_off=self.path_offset_north)
-        self.vf = self.path_offset != 0.0 or self.path_offset_north != 0.0
+        # Every path starts at the origin heading North. A leader that starts
+        # anywhere else (config leader.start / heading_deg), or a shifted path
+        # (path_offset), needs the vector field to fly it onto the path.
+        (x0, y0), chi0 = self.cfg.leader_start, self.cfg.leader_heading
+        self.vf = (self.path_offset != 0.0 or self.path_offset_north != 0.0
+                   or not formation_config.leader_on_path_start(self.cfg))
         if self.vf:
             self.L = VFLeader(self.path, v=self.v_nom, K=g('vf_K'),
                               chi_inf=g('vf_chi_inf'), beta=g('vf_beta'),
-                              eps=g('vf_eps'), omega_max=g('vf_omega_max'))
+                              eps=g('vf_eps'), omega_max=g('vf_omega_max'),
+                              x0=x0, y0=y0, chi0=chi0)
         else:
             self.L = ExactPathLeader(self.path)
         self._clamp_warned = False
@@ -452,6 +464,7 @@ class PathLeaderNode(Node):
         if self.vf:
             self.get_logger().info(
                 f"[vf] path={self.path_name} path_offset={self.path_offset:+.2f} m path_offset_north={self.path_offset_north:+.2f} m | "
+                f"leader start=({x0:+.2f}, {y0:+.2f}) m @ {degrees(chi0):+.1f} deg | "
                 f"K={g('vf_K')} beta={g('vf_beta')} eps={g('vf_eps')} "
                 f"omega_max={g('vf_omega_max')} | d0={self.L.d:+.2f} m, "
                 f"chi_tilde0={self.L.chi_t:+.3f} rad")
@@ -473,7 +486,7 @@ class PathLeaderNode(Node):
                 f"moving in {self.engage_delay:.1f} s")
 
     def _holding(self):
-        """True while the leader must stay at the origin."""
+        """True while the leader must stay at its start pose."""
         if not self.wait_for_formation:
             return self.elapsed < self.start_delay
         if not self.engaged and self.elapsed >= self.engage_timeout:
@@ -487,7 +500,7 @@ class PathLeaderNode(Node):
             n = int(round(self.elapsed / self.dt))
             if n > 0 and n % int(round(10.0 / self.dt)) == 0:
                 self.get_logger().info(
-                    f"[start] holding at origin: waiting for /formation_engaged "
+                    f"[start] holding at start pose: waiting for /formation_engaged "
                     f"({self.elapsed:.0f} s)")
             return True
         return self.since_engaged < self.engage_delay
@@ -495,7 +508,7 @@ class PathLeaderNode(Node):
     def tick(self):
         L = self.L
         if self._holding():
-            # Hold at the origin heading North, no rotation: followers see
+            # Hold at the start pose, no rotation: followers see
             # Delta = 0, so guidance can engage with no initial mismatch.
             self.elapsed += self.dt
             if self.engaged:
@@ -552,9 +565,10 @@ class PathLeaderNode(Node):
 
     def _log_geometry(self):
         """Feasibility for the formation: Delta = atan(g_x / (R - g_y))."""
-        gnorm = float(self.get_parameter('formation_radius').value)
-        gx = float(self.get_parameter('g_x_max').value)
-        gy = gx
+        slots = [f.slot for f in self.cfg.followers]
+        gnorm = max(hypot(a, b) for a, b in slots)
+        gx = max(abs(a) for a, _ in slots)
+        gy = max(abs(b) for _, b in slots)
         R = self.path.min_turn_radius()
         w = self.v_nom / R if R < inf else 0.0
         delta = (0.0 if R == inf else

@@ -33,7 +33,7 @@ on the finite-time term.
 ### 1.2 Runs and validity
 
 `./scripts/start_swarm.sh --leader sinusoid --path-offset 5 <mode flags> --tag <tag> --no-rviz`
-under `timeout -s INT 480`, `GZ_IP=127.0.0.1`, logs in `~/swarm_logs/step8/<tag>/`.
+under `timeout -s INT 480`, `GZ_IP=127.0.0.1`, logs in `~/sim_logs/sitl/step8/<tag>/`.
 
 | tag | mode flags | attempts | flight after leader start | max D_i after 30 s | last drone engaged |
 |---|---|---|---|---|---|
@@ -241,7 +241,7 @@ Formation offsets G_i = (±3, ±3) m (|G| = 4.24 m); spawn table matches.
 #### H.1.3 Runs
 
 All runs: `timeout -s INT 480 ./scripts/start_swarm.sh --leader vf --path-offset 5 … --no-rviz`,
-logs in `~/swarm_logs/step8/<tag>/`. Validity = CSV present, ≥180 s after leader
+logs in `~/sim_logs/sitl/step8/<tag>/`. Validity = CSV present, ≥180 s after leader
 motion onset, 4× `OFFBOARD ENABLED`, `[vf_leader]` d0 line, no D_i > 10 m after
 30 s, correct flags in `run_config.txt`.
 
@@ -436,7 +436,7 @@ Supplementary numbers used below (computed from the same CSVs; windowed max / RM
 #### H.3.7 Anomalies
 
 **A1. Launch-script bugs.** These blocked every run, including the user's own
-September runs. Every `~/swarm_logs/20260910_*` dir contains only
+September runs. Every `~/sim_logs/sitl/runs/20260910_*` dir contains only
 `agent.log`/`px4_1.log`/`run_config.txt`, i.e. it hung at the same step. Fixed in
 `scripts/start_swarm.sh`, outside the task's Section B patch. No gains, control
 laws or controller topics touched:
