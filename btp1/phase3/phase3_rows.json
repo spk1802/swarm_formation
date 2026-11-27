@@ -1,0 +1,47 @@
+[
+ {
+  "id": "H1",
+  "level": "uncorrected",
+  "file": "basak.py",
+  "tag": "basak_none_L-arctan_epsfix_sign_pow_rmin20_chi0_off5_p3",
+  "ts": NaN,
+  "rms_ey": 0.2812976647546309,
+  "max_ey_late": 0.3083068744826627,
+  "mean_ex": 0.015340981809147893,
+  "effort": 14.93274923370487,
+  "kappa_max": 1.6237410958432401,
+  "max_chi_t_deg": 33.004491598883085,
+  "max_rel_err_rad": 0.005042000335561736,
+  "t_clipped": 0.78
+ },
+ {
+  "id": "H2",
+  "level": "pointwise",
+  "file": "run_ours.py",
+  "tag": "ours_pointwise_L-arctan_epsfix_sign_pow_rmin20_chi0_off5_p3",
+  "ts": 6.59,
+  "rms_ey": 0.0005700331318964987,
+  "max_ey_late": 0.0011307269987357316,
+  "mean_ex": -0.00452178512247283,
+  "effort": 10.319674508170344,
+  "kappa_max": 2.688358450532323,
+  "max_chi_t_deg": 13.123296542382842,
+  "max_rel_err_rad": 8.544026416765216e-05,
+  "t_clipped": 1.7850000000000001
+ },
+ {
+  "id": "H3",
+  "level": "full",
+  "file": "run_ours.py",
+  "tag": "ours_full_L-arctan_epsfix_sign_pow_rmin20_chi0_off5_p3",
+  "ts": 4.005,
+  "rms_ey": 0.0004568380168910001,
+  "max_ey_late": 0.0007824876478199627,
+  "mean_ex": -0.0042845980993366515,
+  "effort": 9.142502613657916,
+  "kappa_max": 2.5900982105315524,
+  "max_chi_t_deg": 11.255947496036017,
+  "max_rel_err_rad": 0.00010181933112863445,
+  "t_clipped": 0.855
+ }
+]

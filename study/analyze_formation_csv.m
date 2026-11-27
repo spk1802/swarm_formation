@@ -17,8 +17,11 @@ function out = analyze_formation_csv(csvFile, varargin)
 % next to the CSV (leader=..., path_offset=..., path_offset_north=...,
 % amplitude=..., wavelength=...) unless given as arguments. Shape parameters
 % the run left at "<node default>" use the path_leader node's defaults. The
-% leader always starts at the origin; the offset shifts the PATH (same as
-% start_swarm.sh --path-offset E or N,E).
+% path starts at the origin heading North, shifted by the offset (same as
+% start_swarm.sh --path-offset E or N,E). The leader starts wherever
+% config/formation.yaml put it (read from the CSV's first sample); exact mode
+% only when there is no offset AND it starts at the origin heading North,
+% otherwise it flew onto the path with the vector field.
 %
 % Options (name-value):
 %   'Path'           'sinusoid' | 'figure8' | 'circle' | 'straight_line'
@@ -160,8 +163,17 @@ function out = analyze_formation_csv(csvFile, varargin)
     if isfield(cfg, 'wavelength') && ismember('Wavelength', ip.UsingDefaults)
         o.Wavelength = cfg.wavelength;
     end
-    exactMode = (offN == 0 && offE == 0);
+    % Leader start pose = first sample (it holds there until released).
+    % Older runs always started at the origin heading North; since
+    % config/formation.yaml it can start anywhere, which also means VF mode.
+    lead0 = [T.leader_x(1), T.leader_y(1), wrapPi(T.leader_chi(1))];
+    leaderAtOrigin = hypot(lead0(1), lead0(2)) < 1e-3 && abs(lead0(3)) < 1e-3;
+    exactMode = (offN == 0 && offE == 0) && leaderAtOrigin;
     offTxt = sprintf('offset %+.1f m N, %+.1f m E', offN, offE);
+    if ~leaderAtOrigin
+        offTxt = sprintf('%s, leader start (%+.1f, %+.1f) m @ %.0f deg', offTxt, ...
+                         lead0(1), lead0(2), rad2deg(lead0(3)));
+    end
     P = make_path(pathName, offN, offE, o);
     n = height(T);
     dL = nan(n, 1); chiP = nan(n, 1); u = 0;
@@ -884,17 +896,17 @@ function [name, offN, offE, src, cfg] = resolve_path(csvFile, o)
     fn = fullfile(fileparts(csvFile), 'run_config.txt');
     if isfile(fn)
         txt = fileread(fn);
-        tk = regexp(txt, 'leader=(\w+)', 'tokens', 'once');
+        tk = regexp(txt, '^leader=(\w+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.leader = tk{1}; end
-        tk = regexp(txt, 'path_offset=([-+0-9.eE]+)', 'tokens', 'once');
+        tk = regexp(txt, '^path_offset=([-+0-9.eE]+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.path_offset = str2double(tk{1}); end
-        tk = regexp(txt, 'path_offset_north=([-+0-9.eE]+)', 'tokens', 'once');
+        tk = regexp(txt, '^path_offset_north=([-+0-9.eE]+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.path_offset_north = str2double(tk{1}); end
-        tk = regexp(txt, 'amplitude=([-+0-9.eE]+)', 'tokens', 'once');
+        tk = regexp(txt, '^amplitude=([-+0-9.eE]+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.amplitude = str2double(tk{1}); end
-        tk = regexp(txt, 'wavelength=([-+0-9.eE]+)', 'tokens', 'once');
+        tk = regexp(txt, '^wavelength=([-+0-9.eE]+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.wavelength = str2double(tk{1}); end
-        tk = regexp(txt, 'enable_delta=(\w+)', 'tokens', 'once');
+        tk = regexp(txt, '^enable_delta=(\w+)', 'tokens', 'once', 'lineanchors');
         if ~isempty(tk); cfg.enable_delta = any(strcmpi(tk{1}, {'true', '1', 'on'})); end
     else
         warning(['run_config.txt not found next to the CSV (%s). Path/offset fall back ', ...

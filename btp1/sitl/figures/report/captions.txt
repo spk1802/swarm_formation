@@ -1,0 +1,7 @@
+fig_sitl_overlay
+PX4 SITL against the Python prediction (dotted): (a) leader cross-track error; (b) leader course error; (c) follower lateral error, RMS over the four drones; (d) follower course error, RMS over the four drones.
+Source: sitl/logs/*.csv, final/results/*_final_*_nominal.mat
+
+fig_sitl_lag
+(a) Common lateral bias (mean e_y of the four drones) against leader turn rate, with fitted slopes; (b) formation error D with measured-course feedback against the velocity lead.
+Source: sitl/logs/*.csv

@@ -18,6 +18,7 @@ from typing import List, Tuple
 import yaml
 
 MAX_FOLLOWERS = 4  # follower_controller has publishers for px4_1..px4_4
+CLEARANCE = 1.5    # [m] min spacing between spawns and between spawn->slot routes
 
 
 @dataclass
@@ -74,19 +75,70 @@ def load(path=''):
     if not 1 <= len(entries) <= MAX_FOLLOWERS:
         raise ValueError(f"{path}: need 1..{MAX_FOLLOWERS} followers, got {len(entries)}")
     for i, e in enumerate(entries, 1):
-        slot = _pair(e.get('slot'), f'followers[{i}].slot')
-        spawn = (_pair(e['spawn'], f'followers[{i}].spawn') if 'spawn' in e
-                 else cfg.slot_world(*slot))
-        heading = (radians(float(e['heading_deg'])) if 'heading_deg' in e
-                   else cfg.leader_heading)
+        name = f'followers[{i}]'
+        slot = _pair(e.get('slot'), f'{name}.slot')
+        # Spawn: spawn_rel = [ahead, right] of the leader's start pose (turns
+        # and moves with the leader), or spawn = absolute [north, east].
+        # Neither: on the slot.
+        if 'spawn_rel' in e and 'spawn' in e:
+            raise ValueError(f"{path}: {name} has both spawn_rel and spawn; use one")
+        if 'spawn' in e:
+            spawn = _pair(e['spawn'], f'{name}.spawn')
+        else:
+            spawn = cfg.slot_world(*_pair(e.get('spawn_rel', slot), f'{name}.spawn_rel'))
+        # Heading: heading_rel_deg relative to the leader's, or heading_deg
+        # absolute. Neither: same as the leader.
+        if 'heading_rel_deg' in e and 'heading_deg' in e:
+            raise ValueError(f"{path}: {name} has both heading_rel_deg and heading_deg; use one")
+        if 'heading_deg' in e:
+            heading = radians(float(e['heading_deg']))
+        else:
+            heading = cfg.leader_heading + radians(float(e.get('heading_rel_deg', 0.0)))
         cfg.followers.append(Follower(slot, spawn, heading))
 
-    # Two drones spawned on top of each other collide on takeoff.
-    for i, a in enumerate(cfg.followers, 1):
-        for j, b in enumerate(cfg.followers[i:], i + 1):
-            if hypot(a.spawn[0] - b.spawn[0], a.spawn[1] - b.spawn[1]) < 1.5:
-                raise ValueError(f"{path}: drones {i} and {j} spawn under 1.5 m apart")
+    check_clearance(cfg)
     return cfg
+
+
+def _seg_dist(p, q, a, b):
+    """Shortest distance between 2-D segments p-q and a-b."""
+    def pt_seg(x, u, v):
+        dx, dy = v[0] - u[0], v[1] - u[1]
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x[0] - u[0]) * dx + (x[1] - u[1]) * dy) / L2))
+        return hypot(x[0] - u[0] - t * dx, x[1] - u[1] - t * dy)
+
+    def cross(o, u, v):
+        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+
+    d1, d2 = cross(a, b, p), cross(a, b, q)
+    d3, d4 = cross(p, q, a), cross(p, q, b)
+    if d1 * d2 < 0 and d3 * d4 < 0:
+        return 0.0                                   # proper crossing
+    return min(pt_seg(p, a, b), pt_seg(q, a, b), pt_seg(a, p, q), pt_seg(b, p, q))
+
+
+def check_clearance(cfg):
+    """All drones leave their spawns together when the leader starts moving
+    and head for their slots; nothing keeps them apart. So refuse spawns that
+    are too close, and spawn->slot
+    routes (straight lines around the leader's start pose, an approximation of
+    the real curved flight) that cross or pass within CLEARANCE."""
+    route = [(f.spawn, cfg.slot_world(*f.slot)) for f in cfg.followers]
+    for i in range(len(route)):
+        for j in range(i + 1, len(route)):
+            (si, gi), (sj, gj) = route[i], route[j]
+            if hypot(si[0] - sj[0], si[1] - sj[1]) < CLEARANCE:
+                raise ValueError(f"{cfg.path}: drones {i + 1} and {j + 1} spawn "
+                                 f"under {CLEARANCE} m apart")
+            d = _seg_dist(si, gi, sj, gj)
+            if d < CLEARANCE:
+                raise ValueError(
+                    f"{cfg.path}: drones {i + 1} and {j + 1} would pass {d:.2f} m apart "
+                    f"flying spawn->slot (drone {i + 1}: ({si[0]:g},{si[1]:g})->"
+                    f"({gi[0]:g},{gi[1]:g}), drone {j + 1}: ({sj[0]:g},{sj[1]:g})->"
+                    f"({gj[0]:g},{gj[1]:g}) NED). Use spawn_rel so spawns turn with "
+                    "the leader, or move the spawns.")
 
 
 def summary(cfg):

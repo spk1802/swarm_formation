@@ -56,7 +56,7 @@ Sinusoid is parametrized as r(u) = (u, f(u)), so the projection and chi_p_dot
 reduce exactly to the graph-form y = f(x) expressions used through step 8.
 """
 
-from math import sin, cos, atan, atan2, sqrt, pi, hypot, degrees, inf
+from math import sin, cos, atan, atan2, asin, exp, sqrt, pi, hypot, degrees, inf
 
 try:
     import rclpy
@@ -157,6 +157,25 @@ class SinusoidPath(ParametricPath):
                 (0.0, A * k * k * k * sin(k * u)))
 
 
+class SinePath(ParametricPath):
+    """y = A sin(kx) + y_off, parametrized by u = x (the BTP Python study's
+    path). Starts at the origin on a zero crossing, heading atan(A k) off
+    North -- use a VF-mode leader start (config) to fly onto it."""
+
+    def __init__(self, amplitude=30.0, wavelength=300.0, y_off=0.0):
+        self.A = amplitude
+        self.k = 2.0 * pi / wavelength
+        self.y_off = y_off
+        self.u_marker = (-10.0, 2.0 * wavelength)
+
+    def _p(self, u):
+        A, k = self.A, self.k
+        return ((u, A * sin(k * u)),
+                (1.0, A * k * cos(k * u)),
+                (0.0, -A * k * k * sin(k * u)),
+                (0.0, -A * k * k * k * cos(k * u)))
+
+
 class StraightPath(ParametricPath):
     """Due North from the origin."""
 
@@ -206,7 +225,7 @@ class Figure8Path(ParametricPath):
                 (-A * cos(u), -8 * B * cos(2 * u)))
 
 
-PATHS = ('sinusoid', 'figure8', 'circle', 'straight_line')
+PATHS = ('sinusoid', 'sine', 'figure8', 'circle', 'straight_line')
 
 
 def make_path(name, y_off=0.0, amplitude=10.0, wavelength=130.0, radius=20.0,
@@ -223,6 +242,8 @@ def _make_path(name, y_off, amplitude, wavelength, radius, direction,
                f8_length, f8_width):
     if name == 'sinusoid':
         return SinusoidPath(amplitude, wavelength, y_off)
+    if name == 'sine':
+        return SinePath(amplitude, wavelength, y_off)
     if name == 'figure8':
         return Figure8Path(f8_length, f8_width, y_off)
     if name == 'circle':
@@ -307,8 +328,12 @@ class VFLeader:
     """
 
     def __init__(self, path, v=0.5, K=0.3, chi_inf=pi / 2, beta=0.08,
-                 eps=0.3, omega_max=0.08, x0=0.0, y0=0.0, chi0=0.0):
+                 eps=0.3, omega_max=0.08, x0=0.0, y0=0.0, chi0=0.0,
+                 field='arctan', C=0.1667):
         self.path = path
+        if field not in ('arctan', 'arccos'):
+            raise ValueError(f"vf_field must be arctan|arccos, got {field}")
+        self.field, self.C = field, C
         self.v_nom = v
         self.K, self.chi_inf, self.beta, self.eps = K, chi_inf, beta, eps
         self.omega_max = omega_max
@@ -324,9 +349,19 @@ class VFLeader:
         self.clamped = False
         self._update_geometry()           # sets d, chi_p, chi_t
 
+    def phi(self, d):
+        """Approach angle and its slope: arctan (paper Eq. 5) or arccos
+        (Pal and Hota, written as -sign(d) asin(1 - exp(-C|d|)))."""
+        if self.field == 'arccos':
+            u = exp(-self.C * abs(d))
+            return (-(1.0 if d >= 0 else -1.0) * asin(1.0 - u),
+                    -self.C * u / sqrt(max(2.0 * u - u * u, 1e-12)))
+        return (-self.chi_inf * (2.0 / pi) * atan(self.K * d),
+                -self.chi_inf * (2.0 / pi) * self.K / (1.0 + (self.K * d) ** 2))
+
     def _update_geometry(self):
         self.u, self.d, self.chi_p = self.path.project(self.x, self.y, self.u)
-        chi_d = self.chi_p - self.chi_inf * (2.0 / pi) * atan(self.K * self.d)
+        chi_d = self.chi_p + self.phi(self.d)[0]
         self.chi_t = wrap(self.chi - chi_d)
 
     def turn_rate(self):
@@ -339,10 +374,9 @@ class VFLeader:
         chi_p_dot = (x1 * y2 - y1 * x2) / (x1 * x1 + y1 * y1) * u_dot
         d_dot = v * sin(self.chi - self.chi_p)
 
-        chi_d = self.chi_p - self.chi_inf * (2.0 / pi) * atan(self.K * self.d)
-        self.chi_t = wrap(self.chi - chi_d)
-        ff = chi_p_dot - self.chi_inf * (2.0 / pi) * \
-            self.K / (1.0 + (self.K * self.d) ** 2) * d_dot
+        phi, dphi = self.phi(self.d)
+        self.chi_t = wrap(self.chi - (self.chi_p + phi))
+        ff = chi_p_dot + dphi * d_dot
         # reaching term scaled by v/v_nom (arc-length form, see docstring)
         reach = self.beta * sat(self.chi_t / self.eps) * (v / self.v_nom)
         w = ff - reach
@@ -402,12 +436,14 @@ class PathLeaderNode(Node):
             # VF-mode gains
             'vf_K': 0.3, 'vf_chi_inf': pi / 2, 'vf_beta': 0.08,
             'vf_eps': 0.3, 'vf_omega_max': 0.08,
+            'vf_C': 0.1667,                # arccos gain (vf_field:=arccos)
         }
         for k, v in defaults.items():
             self.declare_parameter(k, v)
         g = lambda k: float(self.get_parameter(k).value)  # noqa: E731
         # Leader start pose + slots; '' = the installed config/formation.yaml.
         self.declare_parameter('formation_config', '')
+        self.declare_parameter('vf_field', 'arctan')   # arctan | arccos
         self.cfg = formation_config.load(self.get_parameter('formation_config').value)
 
         self.path_name = str(self.get_parameter('path').value)
@@ -439,7 +475,9 @@ class PathLeaderNode(Node):
             self.L = VFLeader(self.path, v=self.v_nom, K=g('vf_K'),
                               chi_inf=g('vf_chi_inf'), beta=g('vf_beta'),
                               eps=g('vf_eps'), omega_max=g('vf_omega_max'),
-                              x0=x0, y0=y0, chi0=chi0)
+                              x0=x0, y0=y0, chi0=chi0,
+                              field=str(self.get_parameter('vf_field').value),
+                              C=g('vf_C'))
         else:
             self.L = ExactPathLeader(self.path)
         self._clamp_warned = False
@@ -465,7 +503,7 @@ class PathLeaderNode(Node):
             self.get_logger().info(
                 f"[vf] path={self.path_name} path_offset={self.path_offset:+.2f} m path_offset_north={self.path_offset_north:+.2f} m | "
                 f"leader start=({x0:+.2f}, {y0:+.2f}) m @ {degrees(chi0):+.1f} deg | "
-                f"K={g('vf_K')} beta={g('vf_beta')} eps={g('vf_eps')} "
+                f"field={self.L.field} K={g('vf_K')} C={g('vf_C')} beta={g('vf_beta')} eps={g('vf_eps')} "
                 f"omega_max={g('vf_omega_max')} | d0={self.L.d:+.2f} m, "
                 f"chi_tilde0={self.L.chi_t:+.3f} rad")
 

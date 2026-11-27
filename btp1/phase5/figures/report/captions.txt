@@ -1,0 +1,3 @@
+fig_p5_reaching_law
+Follower reaching law (arccos field, r_min = 20 m, full Delta): (a) |course error| without noise for sign-power and saturation at three gains; (b) |e_y| at gain pi/4 without noise and with sigma = 1 deg heading noise; (c) turn rate with sigma = 1 deg noise, t = 30-35 s; (d) turn-rate jitter and control effort against noise level.
+Source runs: phase5/results/*_p5_*.mat

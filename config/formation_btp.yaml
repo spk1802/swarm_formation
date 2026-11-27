@@ -1,0 +1,23 @@
+# BTP thesis Chapter 7 start configuration (used by start_swarm.sh --btp ...).
+# Mirrors the Python study (BTP1_runs, params_nominal.py) in NED: Python x -> North,
+# Python y -> East. The Python leader starts at (0, -30) heading along +x, about
+# 25.5 m off y = 30 sin(2 pi x/300); its follower has slot (3, 3) and starts 5 m
+# laterally off it. Here every drone starts 5 m laterally outward from its slot.
+
+leader:
+  start: [0.0, -30.0]
+  heading_deg: 0.0
+
+followers:
+  - slot: [3.0, 3.0]       # drone 1: front-right (the Python follower)
+    spawn_rel: [3.0, 8.0]
+    heading_rel_deg: 0.0
+  - slot: [-3.0, 3.0]      # drone 2: rear-right
+    spawn_rel: [-3.0, 8.0]
+    heading_rel_deg: 0.0
+  - slot: [3.0, -3.0]      # drone 3: front-left
+    spawn_rel: [3.0, -8.0]
+    heading_rel_deg: 0.0
+  - slot: [-3.0, -3.0]     # drone 4: rear-left
+    spawn_rel: [-3.0, -8.0]
+    heading_rel_deg: 0.0
