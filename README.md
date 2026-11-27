@@ -16,7 +16,7 @@ Tested on Ubuntu 24.04 with ROS 2 Jazzy, Gazebo Harmonic, PX4 v1.17.0 (`gz_x500`
 
 ```bash
 cd ~/ros2_ws/src
-git clone -b jazzy-harmonic https://github.com/SPK2005/swarm_formation.git
+git clone -b jazzy-harmonic https://github.com/spk1802/swarm_formation.git
 cd ~/ros2_ws && colcon build --symlink-install && source install/setup.bash
 ./src/swarm_formation/scripts/start_swarm.sh
 ```
