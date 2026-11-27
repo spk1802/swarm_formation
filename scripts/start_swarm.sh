@@ -12,6 +12,12 @@
 #   ./start_swarm.sh --n 1 --leader straight_line     # single-drone harness
 #   ./start_swarm.sh --log-dir ~/sim_logs/sitl/step8/mytag
 #   ./start_swarm.sh --config ~/my_start.yaml        # other leader start / spawns / slots
+#   ./start_swarm.sh --params FILE                    # guidance switches + gains (ROS params YAML)
+#
+# BTP thesis Chapter 7 (matches the Python study: 5 m/s, y = 30 sin(2 pi x/300)):
+#   ./start_swarm.sh --btp baseline --tag btp_baseline
+#   ./start_swarm.sh --btp chosen   --tag btp_chosen
+#   ./start_swarm.sh --btp chosen_lead --tag btp_chosen_lead       # + velocity lead for PX4 lag
 #
 # Leader start pose, follower spawns and formation slots live in
 # config/formation.yaml (or --config FILE). The path always starts at the origin.
@@ -40,7 +46,7 @@ GZ_MODEL="x500"
 PX4_AIRFRAME=4001
 
 # Valid leader node names. Must match the choices handled in swarm.launch.py.
-VALID_LEADERS=(sinusoid figure8 circle straight_line)
+VALID_LEADERS=(sinusoid sine figure8 circle straight_line)
 
 # --- carousel / path options (passed through to swarm.launch.py) ------------
 ENABLE_DELTA="true"     # follower's carousel heading correction (Delta)
@@ -51,6 +57,7 @@ LOG_TAG=""              # appended to the logger's CSV filename
 LEADER_SPEED=""         # blank -> use the node's own default
 LEADER_AMPLITUDE=""
 LEADER_WAVELENGTH=""
+PARAMS_FILE=""          # ROS params YAML for leader + follower (guidance switches)
 
 # Leader start pose, follower spawns + slots. Resolved through the symlinks
 # colcon --symlink-install puts in install/, so this is the source tree's file.
@@ -72,6 +79,8 @@ usage() {
   echo "  --wavelength M        sinusoid wavelength"
   echo "  --delta-dot on|off    dDelta/dt feedforward        (default: on)"
   echo "  --path-offset E|N,E   shift the path East (E) or North,East (N,E) [m]: leader flies onto it"
+  echo "  --params FILE         ROS params YAML for leader + follower (guidance switches, gains)"
+  echo "  --btp baseline|chosen|chosen_lead thesis preset: sine path, 5 m/s, formation_btp.yaml + params_btp_*.yaml"
   echo "                        (VF mode, any leader; 0 = exact). Prefer leader.start in --config."
 }
 
@@ -108,6 +117,19 @@ while [[ $# -gt 0 ]]; do
     --speed)      LEADER_SPEED="$2";       shift 2 ;;
     --amplitude)  LEADER_AMPLITUDE="$2";   shift 2 ;;
     --wavelength) LEADER_WAVELENGTH="$2";  shift 2 ;;
+    --params)     PARAMS_FILE="$2";        shift 2 ;;
+    --btp)
+      # Thesis preset: sine path, matched start config and guidance params.
+      case "$2" in
+        baseline|chosen|chosen_lead) ;;
+        *) echo "ERROR: --btp must be baseline|chosen|chosen_lead" >&2; exit 1 ;;
+      esac
+      LEADER="sine"; LEADER_SPEED="5.0"; LEADER_AMPLITUDE="30.0"; LEADER_WAVELENGTH="300.0"
+      FORMATION_CONFIG="$PKG_DIR/config/formation_btp.yaml"
+      PARAMS_FILE="$PKG_DIR/config/params_btp_$2.yaml"
+      if [[ "$2" == "baseline" ]]; then ENABLE_DELTA="false"; ENABLE_DELTA_DOT="false"
+      else ENABLE_DELTA="true"; ENABLE_DELTA_DOT="true"; fi
+      shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -141,7 +163,7 @@ if [[ "$leader_ok" != "true" ]]; then
 fi
 
 # Amplitude/wavelength shape only the sinusoid; --path-offset works for any path.
-if [[ "$LEADER" != "sinusoid" ]] \
+if [[ "$LEADER" != "sinusoid" && "$LEADER" != "sine" ]] \
    && { [[ -n "$LEADER_AMPLITUDE" ]] || [[ -n "$LEADER_WAVELENGTH" ]]; }; then
   echo "WARNING: --amplitude/--wavelength are ignored for leader '$LEADER'" >&2
 fi
@@ -150,6 +172,13 @@ mkdir -p "$LOG_DIR"
 echo "Logs -> $LOG_DIR"
 # The nodes read this copy, so the log folder holds exactly what was flown.
 cp "$FORMATION_CONFIG" "$LOG_DIR/formation.yaml"
+if [[ -n "$PARAMS_FILE" ]]; then
+  if [[ ! -f "$PARAMS_FILE" ]]; then
+    echo "ERROR: params file not found: $PARAMS_FILE" >&2
+    exit 1
+  fi
+  cp "$PARAMS_FILE" "$LOG_DIR/params.yaml"
+fi
 FORMATION_SUMMARY="$(python3 "$PKG_DIR/swarm_formation/formation_config.py" "$LOG_DIR/formation.yaml" --summary)"
 echo "Formation: $FORMATION_SUMMARY"
 echo "Leader: $LEADER | Delta correction: $ENABLE_DELTA${LOG_TAG:+ | tag: $LOG_TAG}"
@@ -169,6 +198,7 @@ echo "Leader: $LEADER | Delta correction: $ENABLE_DELTA${LOG_TAG:+ | tag: $LOG_T
   echo "amplitude=${LEADER_AMPLITUDE:-<node default>}"
   echo "wavelength=${LEADER_WAVELENGTH:-<node default>}"
   echo "formation_config=$(readlink -f "$FORMATION_CONFIG")"
+  echo "params_file=${PARAMS_FILE:+$(readlink -f "$PARAMS_FILE")}"
   echo "formation=$FORMATION_SUMMARY"
   echo "git_rev=$(git -C "$ROS_WS/src/swarm_formation" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$LOG_DIR/run_config.txt"
@@ -263,6 +293,15 @@ if ! command -v ros2 >/dev/null 2>&1; then
   echo "ERROR: 'ros2' not found after sourcing ROS ${ROS_DISTRO:-jazzy} and $ROS_WS" >&2
   exit 1
 fi
+# Gazebo spawns come from $PKG_DIR's config loader; the nodes import the
+# installed one. A stale install (plain `colcon build` copies files) would
+# spawn drones in one place while the controller assumes another.
+INSTALLED_LOADER="$(python3 -c 'import swarm_formation.formation_config as m; print(m.__file__)' 2>/dev/null || true)"
+if ! cmp -s "$INSTALLED_LOADER" "$PKG_DIR/swarm_formation/formation_config.py"; then
+  echo "ERROR: installed swarm_formation is out of date with $PKG_DIR." >&2
+  echo "  Rebuild: cd $ROS_WS && colcon build --symlink-install --packages-select swarm_formation" >&2
+  exit 1
+fi
 # Pin gz-transport discovery to loopback: multicast on the Wi-Fi interface
 # fails with 'Network is unreachable' whenever the link drops, and Gazebo
 # then never reports its world. Override by exporting GZ_IP yourself.
@@ -341,6 +380,7 @@ LAUNCH_ARGS=(
 [[ -n "$LEADER_WAVELENGTH" ]] && LAUNCH_ARGS+=( leader_wavelength:="$LEADER_WAVELENGTH" )
 [[ -n "$PATH_OFFSET"       ]] && LAUNCH_ARGS+=( path_offset:="$PATH_OFFSET" )
 [[ -n "$PATH_OFFSET_NORTH" ]] && LAUNCH_ARGS+=( path_offset_north:="$PATH_OFFSET_NORTH" )
+[[ -n "$PARAMS_FILE"       ]] && LAUNCH_ARGS+=( extra_params:="$LOG_DIR/params.yaml" )
 
 ros2 launch swarm_formation swarm.launch.py "${LAUNCH_ARGS[@]}" \
   > "$LOG_DIR/swarm_launch.log" 2>&1 &

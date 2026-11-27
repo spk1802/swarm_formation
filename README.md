@@ -6,6 +6,8 @@ This is my implementation of the guidance law from Basak and Ghosh, *Virtual Lea
 
 I also added one thing the paper doesn't have, which I call the carousel correction (Δ). It's explained below, and it halves the formation error on curved paths.
 
+**This repo is also my BTP1 (B.Tech Project, part 1) work.** The offline study comparing Basak's controller against my chosen combination, and the PX4/Gazebo runs that back it up, are in [`btp1/`](btp1/). The [BTP1 section](#btp1-btech-project-part-1) below summarises the results.
+
 ![Step 8 evaluation](study/results_step8/v2/step8_evaluation.png)
 
 ## Quick start
@@ -20,6 +22,16 @@ cd ~/ros2_ws && colcon build --symlink-install && source install/setup.bash
 ```
 
 The script starts the DDS agent, Gazebo and 4 PX4 instances, then launches the ROS nodes. It expects PX4 in `~/tools/PX4-Autopilot`. If yours is somewhere else, set `PX4_DIR`. Ctrl-C shuts everything down.
+
+BTP1 Chapter 7 runs (match the Python study in [`btp1/`](btp1/): 5 m/s, y = 30 sin(2πx/300), r_min = 20 m gains, leader 25.5 m off the path, drones 5 m off their slots):
+
+```bash
+start_swarm.sh --btp baseline    --tag btp_baseline --no-rviz   # Basak: guard speed law, no Δ, arctan, sign-power
+start_swarm.sh --btp chosen      --tag btp_chosen   --no-rviz   # ε-fix, full Δ, arccos field, saturation, arccos leader
+start_swarm.sh --btp chosen_lead --tag btp_lead     --no-rviz   # chosen + velocity lead for PX4's 0.385 s lag
+```
+
+`--btp` loads `config/formation_btp.yaml` and `config/params_btp_<name>.yaml`; any params YAML can be passed with `--params FILE`. The path is `--leader sine`. Without these flags every node keeps its old defaults.
 
 Some other ways to run it:
 
@@ -47,7 +59,7 @@ If Gazebo hangs with `Network is unreachable`, run with `GZ_IP=127.0.0.1`.
 
 ## Start poses and formation
 
-Edit [config/formation.yaml](config/formation.yaml): the leader's start point and heading, and each drone's slot (metres ahead/right of the leader), spawn point and heading. Leave out `spawn` and the drone spawns already on its slot. The path always starts at the origin heading North; a leader that starts anywhere else flies onto it first. `start_swarm.sh` and all four nodes read this one file, and each run saves the copy it used as `formation.yaml` in its log folder. Use `--config FILE` to keep several setups side by side.
+Edit [config/formation.yaml](config/formation.yaml): the leader's start point and heading, and each drone's slot, spawn point and heading. Slots and spawns (`spawn_rel`) are metres ahead/right of the leader and headings (`heading_rel_deg`) are relative to the leader's, so moving or turning the leader carries the whole formation with it; `spawn_rel` = `slot` spawns a drone on its slot. Absolute `spawn: [north, east]` / `heading_deg` are also accepted. Each drone hovers at its spawn after takeoff until the leader starts moving, so all followers start together with the leader. Configs whose spawns are under 1.5 m apart, or whose straight spawn-to-slot routes cross or pass within 1.5 m, are refused before launch: all drones fly to their slots at the same time, and nothing else keeps them apart. The path always starts at the origin heading North; a leader that starts anywhere else flies onto it first. `start_swarm.sh` and all four nodes read this one file, and each run saves the copy it used as `formation.yaml` in its log folder. Use `--config FILE` to keep several setups side by side.
 
 ## How it works
 
@@ -89,6 +101,54 @@ What the numbers show:
 - Δ̇ makes no measurable difference in Gazebo.
 - Every drone stayed in its own quadrant for the whole run.
 
+## BTP1 (B.Tech Project, part 1)
+
+My BTP1 asks which parts of Basak and Ghosh's guidance law to keep and which to change. The study starts from their controller and changes one factor at a time, offline in Python, then checks the final combination in PX4/Gazebo SITL. Everything is in [`btp1/`](btp1/) ([how to run it](btp1/README.md)).
+
+Setup for all runs: leader at 5 m/s on y = 30 sin(2πx/300), four drones at slots (±3, ±3) m, r_min = 20 m gains.
+
+| Phase | Factor | Folder |
+|---|---|---|
+| 1 | leader vector field: arctan vs arccos | [btp1/phase1](btp1/phase1) |
+| 2 | follower speed law: guard (Eq. 21) vs ε-fix | [btp1/phase2](btp1/phase2) |
+| 3 | heading correction: none / pointwise Δ / full Δ | [btp1/phase3](btp1/phase3) |
+| 4 | follower field shape: arctan vs arccos, r_min sweep | [btp1/phase4](btp1/phase4) |
+| 5 | reaching law: sign-power vs saturation, gains, heading noise | [btp1/phase5](btp1/phase5) |
+| final | Basak baseline vs chosen combination | [btp1/final](btp1/final) |
+| SITL | the same comparison on four PX4 x500s | [btp1/sitl](btp1/sitl) |
+
+**Baseline** is Basak's follower (no Δ, arctan field, sign-power reaching law, guard speed law) with the arctan leader. **Chosen** is full Δ, arccos follower field, saturation reaching law, ε-fix speed law and the arccos leader.
+
+Offline (Python, perfect plant, [final_table.md](btp1/final/final_table.md)):
+
+| | baseline | chosen |
+|---|---|---|
+| steady RMS lateral error, nominal | 280 mm | 0.29 mm |
+| follower settling (within 0.2 m) | never | 2.5 s |
+| time on a speed limit | 33 s | 0.8 s |
+| RMS lateral error with 1° heading noise | 282 mm | 3.1 mm |
+| follower effort | 15.4 | 10.3 |
+
+SITL (PX4 v1.17 + Gazebo Harmonic, [sitl_table.md](btp1/sitl/sitl_table.md), [findings](btp1/sitl/sitl_findings.md)):
+
+| | baseline | chosen | chosen + velocity lead |
+|---|---|---|---|
+| carousel part of e_y (RMS) | 0.185 m | 0.022 m | 0.019 m |
+| RMS e_y, worst drone | 0.30 m | 0.09 m | 0.047 m |
+| mean formation error D | 0.247 m | 0.087 m | 0.048 m |
+| all four drones settle | no | yes, 13–16 s | yes, 11–13 s |
+
+What came out of it:
+
+- The carousel effect predicted offline shows up in SITL almost exactly (correlation 0.996 with the Python baseline), and full Δ removes nearly all of it.
+- PX4's velocity loop makes each drone's course trail its yaw by about 0.385 s, which adds a lateral bias common to all drones. Steering the velocity setpoint ahead by τ·χ̇ (`chosen_lead`) cancels most of it.
+- Feeding back the measured course instead of yaw puts that lag inside the loop: the formation oscillated at ±4 m and the run was stopped at 28 s.
+- The remaining ~4 cm in SITL is PX4 tracking, not the guidance law; offline the same law reaches 0.3 mm.
+
+![BTP1 final comparison](btp1/final/figures/report/fig_final_comparison.png)
+
+![BTP1 SITL overlay](btp1/sitl/figures/report/fig_sitl_overlay.png)
+
 ## Parameters
 
 Leader defaults:
@@ -127,6 +187,8 @@ study/step8_ros_harness.py    the ROS controller in pure Python, with a perfect 
 study/step8_evaluate.py       metrics and plots from Gazebo CSVs
 study/analyze_formation_csv.m MATLAB plots for one run (works in MATLAB Online)
 study/results_step8/          Step 8 report and figures
+btp1/                         BTP1 study: phase 1-5 + final Python runs, SITL logs and analysis
+config/*_btp*.yaml            BTP1 SITL presets (start_swarm.sh --btp NAME)
 data/                         CSVs referenced in the reports
 ```
 

@@ -1,0 +1,2 @@
+carousel_vector_diagram
+Carousel effect in the leader body frame, slot G = (3, 3) m, v_gl = 5 m/s, illustrative turn rate omega = 0.5 rad/s: the slot moves forward at v_gl - omega g_y and sideways at omega g_x, so the follower must fly at Delta = 23.2 deg to the leader's course at v_req = 3.81 m/s.

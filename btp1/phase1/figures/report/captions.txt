@@ -1,0 +1,11 @@
+fig_p1_fields_rmin20
+Leader guidance with the arctan and arccos fields for r_min = 20 m from the nominal start (y_l0 = -30 m, chi_l0 = 0 deg): (a) trajectory, (b) cross-track error, (c) vector-field curvature kappa_VF against d, (d) flown curvature against path length. The arccos field reaches the path faster (settling 11.1 s vs 12.0 s), and kappa_VF of both fields peaks at 1/r_min (within 0.5 %), confirming the gain normalisation C = 1/(0.300 r_min) and K = 1/(0.385 r_min). The flown curvature exceeds 1/r_min only during the initial turn (first 12 m of path), where the saturation term turns the leader at about beta/v_gl = 0.157 1/m before its heading reaches the field.
+
+fig_p1_rmin_sweep
+Effect of r_min = 10, 20 and 30 m from the nominal start: (a) cross-track error with the arctan field, (b) kappa_VF against d for the arctan field, (c) the same for the arccos field, with each bound +/-1/r_min drawn in the colour of its case. A smaller r_min (higher gain) settles faster (arctan 9.0 / 12.0 / 15.3 s), and each field's kappa_VF peaks at its own bound, to within 1.5 %. The short vertical segment at d = 0 is the path's own curvature (about +/-0.013 1/m) once the leader is on the path.
+
+fig_p1_heading_sweep
+Arctan field, r_min = 20 m, y_l0 = -30 m, with initial headings chi_l0 = 0, 90 and 180 deg: (a) trajectory, (b) flown curvature against path length. The 180 deg start turns hardest, with the highest peak curvature (0.168 1/m) and the longest stretch beyond 1/r_min (about 27 m, against 11 m for 0 deg). The 90 deg start needs the least correction: its curvature stays within 1/r_min throughout (peak 0.049 1/m).
+
+fig_p1_ic_settling
+Leader settling time (|d| within 0.2 m) for the arctan and arccos fields over nine starting conditions, y_l0 = -15 / -30 / -60 m and chi_l0 = 0 / 90 / 180 deg, with r_min = 20 m. The arccos field settles faster in all nine cases, by 0.2-1.1 s.

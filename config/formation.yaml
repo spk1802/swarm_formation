@@ -8,20 +8,25 @@
 # (VF mode) before following it.
 
 leader:
-  start: [0.0, 0.0]        # [north, east] where the virtual leader starts
-  heading_deg: 0.0         # initial leader heading
+  start: [0.0, 10.0]        # [north, east] where the virtual leader starts
+  heading_deg: 0.0        # initial leader heading
 
 followers:                 # drone 1, 2, 3, 4 in order (up to 4)
-
+  # slot:            [ahead, right] of the leader [m] -- its place in the formation
+  # spawn_rel:       [ahead, right] of the leader's START pose [m] -- where it
+  #                  spawns. Turns and moves with the leader. = slot: on its slot.
+  # heading_rel_deg: spawn heading relative to the leader's (0 = same way).
+  # (Advanced: spawn: [north, east] / heading_deg: absolute world values,
+  #  which do NOT follow the leader. Use one form per drone, not both.)
   - slot: [3.0, 3.0]       # drone 1: front-right
-    spawn: [3.0, 3.0]
-    heading_deg: 0.0
+    spawn_rel: [3.0, 3.0]
+    heading_rel_deg: 0.0
   - slot: [-3.0, 3.0]      # drone 2: rear-right
-    spawn: [-3.0, 3.0]
-    heading_deg: 0.0
+    spawn_rel: [-3.0, 3.0] 
+    heading_rel_deg: 0.0
   - slot: [3.0, -3.0]      # drone 3: front-left
-    spawn: [3.0, -3.0]
-    heading_deg: 0.0
+    spawn_rel: [3.0, -3.0]
+    heading_rel_deg: 0.0
   - slot: [-3.0, -3.0]     # drone 4: rear-left
-    spawn: [-3.0, -3.0]
-    heading_deg: 0.0
+    spawn_rel: [-3.0, -3.0]
+    heading_rel_deg: 0.0

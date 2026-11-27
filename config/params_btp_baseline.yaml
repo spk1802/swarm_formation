@@ -1,0 +1,29 @@
+# BTP thesis Chapter 7: Basak baseline (start_swarm.sh --btp baseline).
+# Gains match BTP1_runs/controllers/params_nominal.py (r_min = 20 m, 5 m/s).
+leader:
+  ros__parameters:
+    vf_field: arctan
+    vf_K: 0.1299            # 1 / (0.385 r_min)
+    vf_C: 0.1667
+    vf_beta: 0.7854         # pi/4
+    vf_eps: 1.0
+    vf_omega_max: 10.0      # no clamp, as in the Python study
+
+follower_controller:
+  ros__parameters:
+    enable_delta: false
+    enable_delta_dot: false
+    speed_law: guard
+    eps_den: 0.01
+    field: arctan
+    k_y: 0.1299
+    field_C: 0.1667
+    k_D: 1.0
+    reaching: sign_pow
+    eta: 0.7854
+    mu: 0.7854
+    eps_sat: 1.0
+    min_speed: 0.5
+    max_speed: 8.0
+    max_accel: 3.0
+    max_yaw_rate: 1.5

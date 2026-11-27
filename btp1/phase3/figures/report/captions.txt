@@ -1,0 +1,3 @@
+fig_p3_heading_correction
+Heading correction at nominal settings (uncorrected / pointwise / full): (a) lateral error e_y; (b) |e_y| (log scale); (c) relative course chi_i - chi_l against the Delta predicted from omega(t); (d) follower paths against the slot at the sharpest bend (x ≈ 225 m).
+Source runs: phase3/results/*_p3.mat

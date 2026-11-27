@@ -22,6 +22,12 @@ def launch_setup(context, *args, **kwargs):
     leader_wavelength = LaunchConfiguration('leader_wavelength').perform(context)
     formation_config = os.path.expanduser(
         LaunchConfiguration('formation_config').perform(context))
+    extra_params = os.path.expanduser(
+        LaunchConfiguration('extra_params').perform(context))
+    # Optional ROS params file (e.g. config/params_btp_chosen.yaml), applied
+    # after the dicts below so its values win for 'leader' and
+    # 'follower_controller'.
+    extra = [extra_params] if extra_params else []
 
     # Every node reads leader start pose, spawns and slots from the same file.
     common_params = {
@@ -60,10 +66,10 @@ def launch_setup(context, *args, **kwargs):
         logger_params['output_dir'] = log_dir
     actions = [
         Node(package='swarm_formation', executable='path_leader',
-             name='leader', output='screen', parameters=[leader_params]),
+             name='leader', output='screen', parameters=[leader_params] + extra),
 
         Node(package='swarm_formation', executable='follower_controller',
-             name='follower_controller', output='screen', parameters=[follower_params]),
+             name='follower_controller', output='screen', parameters=[follower_params] + extra),
 
         Node(package='swarm_formation', executable='swarm_visualizer',
              name='swarm_visualizer', output='screen', parameters=[common_params]),
@@ -84,7 +90,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'leader', default_value='sinusoid',
-            choices=['sinusoid', 'figure8', 'circle', 'straight_line'],
+            choices=['sinusoid', 'sine', 'figure8', 'circle', 'straight_line'],
             description='Virtual leader reference path generator.'),
 
         DeclareLaunchArgument(
@@ -144,6 +150,11 @@ def generate_launch_description():
                                        'config', 'formation.yaml'),
             description='Leader start pose, follower spawns and formation slots. '
                         'start_swarm.sh must spawn Gazebo from the same file.'),
+
+        DeclareLaunchArgument(
+            'extra_params', default_value='',
+            description='Optional ROS params YAML for the leader and follower '
+                        '(guidance switches and gains). Empty = node defaults.'),
 
         OpaqueFunction(function=launch_setup),
     ])

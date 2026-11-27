@@ -1,0 +1,3 @@
+fig_final_comparison
+Basak baseline against the chosen combination at the nominal start: (a) leader and follower paths, with an inset of the follower against its slot at the sharpest bend; (b) lateral error e_y; (c) |e_y| (log), also with 1 deg heading noise; (d) follower speed.
+Source runs: final/results/*_final_*.mat

@@ -24,3 +24,7 @@ formation_*.csv
 
 # Screenshots / scratch
 *.dot
+
+# BTP1 study: keep the SITL logs, drop regenerable .mat results
+!btp1/sitl/logs/
+btp1/**/*.mat

@@ -1,0 +1,3 @@
+fig_p4_follower_field
+Follower field shape (leader fixed): (a) |e_y| for both fields at r_min = 20 m from 5 m and 15 m starts; (b) follower settling time for r_min = 10, 20, 30 m and the 15 m start; (c) |e_y| for r_min = 10 and 30 m; (d) flown curvature for the 15 m start with ±1/r_min, shaded where the speed is at a limit.
+Source runs: phase4/results/*_p4.mat
